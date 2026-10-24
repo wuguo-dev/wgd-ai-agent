@@ -102,7 +102,8 @@
 
 ### 3.3 依赖现状与版本冲突（关键）
 
-- 本地 `.m2` 已有：`org.springframework.ai:spring-ai-model:1.1.2`、`spring-ai-alibaba-agent-framework:1.1.2.0/1.1.2.1`、`spring-ai-alibaba-graph-core:1.1.2.0`、`io.modelcontextprotocol.sdk:mcp-core:0.14.0`（有 jar）、`mcp-json-jackson2:0.17.0`（有 jar）。**`spring-ai-mcp` 与 `mcp:0.17.0` 的 jar 不在本地**，首次构建必须联网。
+- 本地仓库已有：`org.springframework.ai:spring-ai-model:1.1.2`、`spring-ai-alibaba-agent-framework:1.1.2.0/1.1.2.1`、`spring-ai-alibaba-graph-core:1.1.2.0`、`io.modelcontextprotocol.sdk:mcp-core:0.14.0`（有 jar）、`mcp-json-jackson2:0.17.0`（有 jar）。编写本规格时 `spring-ai-mcp` 与 `mcp:0.17.0` 的 jar 不在本地；S1 施工后已完成拉取（`dependency:tree` 确认 0.17.0 全链到位），**首次构建仍需联网一次**。
+- **本机 localRepository 不在 `~/.m2/repository`**：由 Maven 安装目录 `conf/settings.xml` 的 `localRepository` 指定（实测为 Maven home 下配置的路径）。排查「离线构建缺件」时先确认 `<localRepository>` 实际指向，别默认去 `~/.m2` 找（S1 施工记录）。
 - 版本仲裁方向：`spring-ai-mcp:1.1.2` 的 POM 声明 `io.modelcontextprotocol.sdk:mcp:0.17.0`（本项目里是 depth 3）；`spring-ai-alibaba-agent-framework:1.1.2.0` 的 POM 声明 `mcp:0.14.0`（depth 2）→ **nearest-wins 会选 0.14.0**，而 `spring-ai-bom` 不管理该 SDK。**必须在 `dependencyManagement` 钉 `io.modelcontextprotocol.sdk:mcp:0.17.0`**，否则 `SyncMcpToolCallback` 运行期 `NoSuchMethodError`。
 - `spring-ai-mcp` 只需一个直接依赖：`mcp:0.17.0` 是聚合包（空 jar），会带入 `mcp-core` 与 `mcp-json-jackson2`。
 - `spring-ai-starter-mcp-client:1.1.2` 的 POM 声明 `spring-boot-starter:3.5.8`；本项目父 POM 是 3.4.4，混用需依赖 `dependencyManagement` 降级。**本轮不引入 starter（D9），从根上回避该错配**。
@@ -565,8 +566,15 @@ love-app:
 `.mvn/maven.config`：
 
 ```
--s .mvn/settings.xml
+-s.mvn/settings.xml
 ```
+
+**重要（S1 实测修正，勿按直觉改回）**：Maven 3.9.6 把 `maven.config` 的**每一行当作一个整体参数**解析，不按空白切分。所以文件内 `-s` 与路径之间**不能有空格**：
+
+- `-s.mvn/settings.xml` → commons-cli 识别为「选项 `-s` + attached value `.mvn/settings.xml`」；`mvn -o validate -X` 实测输出 `[DEBUG] Reading user settings from <项目根>\.mvn\settings.xml`。
+- `-s .mvn/settings.xml`（带空格）→ 整行成为一个 token，值变成带前导空格的 `" .mvn/settings.xml"`，报 `The specified user settings file does not exist`，**所有 mvn 命令失败**。
+
+注意区分两个场景：**命令行**里 `-s` 与路径是两个独立参数（`mvn -s .mvn/settings.xml ...`，必须有空格）；**只有 `maven.config` 文件内**才合并成一个 token。
 
 `pom.xml` 兜底（IDE 默认不读 `maven.config`）：
 
@@ -615,7 +623,7 @@ love-app:
 
 不引入 `spring-ai-starter-mcp-client`（D9）。`spring-ai-mcp` 版本由 `spring-ai-bom:1.1.2` 管理；`mcp` 必须钉 0.17.0（§3.3）。
 
-落地与验收：一次在线 `mvn -DskipTests compile` 拉全依赖 → `mvn -o -DskipTests compile` 必须为 0；`mvn dependency:tree -Dincludes=io.modelcontextprotocol.sdk` 只能出现 `0.17.0`；`mvn dependency:tree -Dincludes=org.springframework.boot` 不得出现 `3.5.x`。若 `maven.config` 的路径解析导致所有 mvn 命令失败，删掉它、改用显式 `mvn -s .mvn/settings.xml ...` 并写入 `README.md`（S1 验收必须覆盖）。
+落地与验收：一次在线 `mvn -DskipTests compile` 拉全依赖 → `mvn -o -DskipTests compile` 必须为 0；`mvn dependency:tree -Dincludes=io.modelcontextprotocol.sdk` 只能出现 `0.17.0`；`mvn dependency:tree -Dincludes=org.springframework.boot` 不得出现 `3.5.x`。若 `maven.config` 的路径解析导致所有 mvn 命令失败，删掉它、改用显式 `mvn -s .mvn/settings.xml ...` 并写入 `README.md`。**S1 实测验收已通过**：`mvn -v`=0、`mvn -o -DskipTests compile`=0、`mvn -o test` 18/18 绿且只跑 offline、`mvn dependency:get` 日志出现 `Downloading from aliyun-public`（镜像真生效）、`dependency:tree` 只有 `mcp:0.17.0` 与 Boot 3.4.4。
 
 ### 8.4 密钥规则
 
@@ -796,7 +804,7 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | R7 | saver 检查点按节点写入：失败轮次留下中间状态，与「只在成功时落盘」不同 | 语义差异、可能续跑未完成回合 | 中 | 明确写入 §4.4；失败不回滚；中间状态通常自洽（toolCall + toolResponse 成对） | T16/T17 验证历史正确；T13 验证工具失败不破坏状态 |
 | R8 | 若验收发现知识库覆盖不足需增补文档，必须重跑 ETL | 计划外成本 | 中 | D13：本轮不改 `document/**`；prompt 要求未命中时说明 | 冒烟看 `loveKbSearch` 命中率；确需增补时单独开波次，`$env:LOVE_APP_ETL_ENABLED='true'; mvn spring-boot:run`，完成后立即关回 `false` |
 | R9 | `application-local.yml` 内含明文 DashScope key / RDS 口令（已 gitignore，属既有债） | 泄漏面 | 中 | 本规格不引入新明文；README 提醒改用环境变量并轮换 | `git ls-files | Select-String application-local` 应为空 |
-| R10 | `.mvn/maven.config` 全局生效，写错会阻塞所有 mvn 命令 | 阻塞全员 | 低 | 内容仅一行 `-s`；落地后立即验证 | `mvn -o -DskipTests compile`=0；失败即删除并改用显式 `-s` |
+| R10 | `.mvn/maven.config` 全局生效，写错会阻塞所有 mvn 命令 | 阻塞全员 | 低 | 内容仅一行 `-s.mvn/settings.xml`（**不能有空格**，见 §8.3 实测说明）；落地后立即用 `mvn -o validate -X` 验证 `Reading user settings from` 指向本项目 `.mvn/settings.xml` | `mvn -o -DskipTests compile`=0；失败即删除并改用显式 `mvn -s .mvn/settings.xml ...`（命令行两参数、有空格） |
 | R11 | 高德 SSE 长连接被代理缓冲/断开 | 地点类问题间歇降级 | 中 | `request-timeout=20s`；§7 矩阵兜住；部署层需关 SSE 缓冲 | 连续 20 次「查地点」冒烟统计失败率；>10% 排查代理或切 stdio |
 | R12 | SSE 客户端断开后仍消耗额度 | 成本 | 中 | `onError/onCompletion` 取消订阅 | 人工 `curl` 中途 Ctrl+C 后看无后续工具调用 |
 | R13 | `FileBasedChatMemory` 线程安全修复引入回归 | 旧接口异常 | 低 | 每会话锁 + 原子写 | T19/T20 |
