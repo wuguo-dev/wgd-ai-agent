@@ -494,6 +494,8 @@ data: {"chatId":"abc123","elapsedMs":4210}
 | `AGENT_ERROR` | 502 | 模型永久性拒绝/鉴权失败 |
 | `AGENT_LOOP_LIMIT` | 500 | 工具循环超限 |
 | `INTERNAL_ERROR` | 500 | 兜底 |
+| `RATE_LIMITED` | 429 | （第二轮）超过 API Key 的限流额度，响应头带 `Retry-After` |
+| `UNAUTHORIZED` | 401 | （第二轮）启用了鉴权但 `X-API-Key` 缺失或错误 |
 
 **不出现 5xx 的场景**（D7 硬约束，评审必检）：MCP 未配置/连不上/中途断连、工具抛异常、知识库缺失或检索失败、工具参数不合法、检查点降级。这些一律通过工具结果文本 + 模型自然语言表达。
 
@@ -796,8 +798,8 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 4. **不做对话摘要（`SummarizationHook`）**；窗口裁剪用 `HistoryWindowHook`，不额外调模型。
 5. **不做 MCP 热重连/后台探活/熔断**；启动失败即本进程内用本地工具，靠重启恢复。
 6. **不做工具级 SSE 事件**（不向前端暴露「正在调用某工具」）。
-7. **不做前端页面**；验收用 curl + Knife4j。
-8. **不做鉴权/限流/多租户**。
+7. ~~不做前端页面~~ **（第二轮已纳入，见 §13）**；第一轮验收用 curl + Swagger UI。
+8. ~~不做鉴权/限流/多租户~~ **（第二轮已纳入鉴权与限流，多租户仍不做，见 §13）**。
 9. **不改向量库 schema、不换 embedding 模型、不重跑 ETL**（D13）。
 10. **不重构 `SalesAnalysisApp`/demo 包**；不删除既有 `doChat*` 方法。
 11. **不引入 WebFlux**（MVC + `SseEmitter`）。
@@ -854,6 +856,59 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | MCP 传输默认 | `sse` | V4 被证伪 | `AMAP_MCP_PROTOCOL=stdio`，不改代码 |
 | 递归上限 | 8 | 复杂问题被截断（日志见 `AGENT_LOOP_LIMIT`） | 调到 12，同时观察成本 |
 | 流式兜底 | 零 chunk 时补发全文 | 前端要求严格逐字 | 改走 `streamMessages` 并在 `LoveAgent` 聚合，HTTP 契约不变 |
+
+---
+
+## 13. 第二轮增量（2026-10-24 立项）
+
+第一轮已交付并通过 AC1–AC9 验收（含真实高德 MCP 连通）。本轮只做三件「能给人用」的事，其余（`PostgresSaver`、多实例、多渠道）仍不做。
+
+### 13.1 决策
+
+| 编号 | 决策 | 理由 / 边界 |
+| --- | --- | --- |
+| D18 | **MCP 工具白名单**：默认只暴露 12 个业务工具，屏蔽 `maps_schema_navi` / `maps_schema_take_taxi` / `maps_schema_personal_map` | 实测 15 个工具定义约 1.5k–2.2k tokens/轮，3 个 schema 是元工具，恋爱场景用不到。白名单可通过 `love-app.agent.mcp.exclude-tools` 覆盖（默认值即上面 3 个） |
+| D19 | **可选 API Key 鉴权**：配了 `LOVE_APP_API_KEY` 才启用；请求头 `X-API-Key` 必须匹配，否则 401 `UNAUTHORIZED` | **默认关闭**，避免打断 curl/本地调试与既有 AC。启用后 `/api/hello`、`/v3/api-docs`、静态页**放行**（文档与页面要能打开） |
+| D20 | **限流**：按 API Key（未启用鉴权时按客户端 IP）做令牌桶，默认 **30 次/分钟**、桶容量 30；超限 429 `RATE_LIMITED` + `Retry-After: <秒>` | 内存实现，单实例有效；多实例下各实例独立计数（明确接受，非目标） |
+| D21 | **静态聊天页**：`src/main/resources/static/index.html` 单文件（原生 JS + `fetch` 读 SSE 流），**不引前端构建链** | 页面提供：消息输入、流式打字、Key 输入框（存 sessionStorage）、chatId 复用、错误码友好提示 |
+
+### 13.2 验收标准
+
+| 编号 | 验收标准 | 判定方式 |
+| --- | --- | --- |
+| AC10 | 设 `LOVE_APP_API_KEY=k` 后：无 key / 错 key → 401 `UNAUTHORIZED`；带对 key → 200 | 离线 `ApiKeyFilterTest` + 真机 curl |
+| AC11 | 未设 `LOVE_APP_API_KEY` 时行为与第一轮完全一致（不鉴权） | 离线用例 + 既有 137 条测试不回退 |
+| AC12 | 超过限流额度 → 429 `RATE_LIMITED` 且带 `Retry-After`；等一个窗口后恢复 | 离线 `RateLimitFilterTest`（可注入时钟） |
+| AC13 | 打开 `http://localhost:8123/api/index.html` 能对话：输出逐字出现、结束无残留、错误能在页面显示 | 人工冒烟 + 页面在静态资源目录被 Spring 托管 |
+
+### 13.3 配置增量（`love-app.agent` 之外新增前缀 `love-app.security`）
+
+| 属性 | 默认 | 环境变量 | 说明 |
+| --- | --- | --- | --- |
+| `security.api-key` | 空（关闭鉴权） | `LOVE_APP_API_KEY` | 非空即启用鉴权 |
+| `security.rate-limit-per-minute` | `30` | `LOVE_APP_RATE_LIMIT_PER_MINUTE` | 每 Key（或每 IP）每分钟令牌数 |
+| `security.rate-limit-burst` | `30` | `LOVE_APP_RATE_LIMIT_BURST` | 桶容量 |
+| `agent.mcp.exclude-tools` | 上面 3 个 `maps_schema_*` | — | 工具名子串/全名黑名单 |
+
+### 13.4 交付波次与所有权
+
+| 波次 | owner | 文件 | 交付 | 门槛 |
+| --- | --- | --- | --- | --- |
+| R2-1（并行） | S3 | `tool/**`、`agent/AgentProperties`、对应测试 | D18 工具白名单 + 启动日志打印「实际暴露 N 个 / 排除 M 个」 | `mvn -o test` 全绿 |
+| R2-1（并行） | S2 | `src/main/resources/static/**` | D21 单文件聊天页 | 文件存在、可被访问（不跑 mvn） |
+| R2-2 | S4 | 新包 `security/**`、`controller/**`（如需）、`model/**`、`exception/GlobalExceptionHandler`（新增 401/429 映射）、`application.yml` | D19 鉴权 + D20 限流 + AC10–AC12 | `mvn -o test` 全绿 + controller/security 专项 |
+| R2-3 | Reviewer | 只读 | 双轴复审本轮增量 | 阻断项清零 |
+
+**边界**：`security/**` 只有 S4 写；`static/**` 只有 S2 写；工具白名单只有 S3 写；`pom.xml` 只有 S1 写（本轮预计无需新依赖，限流用 `ConcurrentHashMap` + 时间戳实现，不引 Bucket4j）。
+
+### 13.5 非目标（本轮）
+
+1. 不做 `PostgresSaver` / 多实例共享记忆（明确推迟）。
+2. 不做多租户 / 用户体系 / 数据库存 Key。
+3. 不做分布式限流（Redis）。
+4. 不做前端框架、路由、历史会话列表 UI。
+5. 不改第一轮的 HTTP 契约（只新增 401/429 两种错误码）。
+6. 不做工具级 SSE 事件（前端仍只看文本）。
 
 ---
 
