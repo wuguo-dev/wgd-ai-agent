@@ -2,7 +2,7 @@ package com.wgd.wgdaiagent.app;
 
 import cn.hutool.core.lang.Assert;
 import com.wgd.wgdaiagent.advisor.MyLoggerAdvisor;
-import com.wgd.wgdaiagent.advisor.ReReadingAdvisor;
+import com.wgd.wgdaiagent.agent.LoveAgent;
 import com.wgd.wgdaiagent.chatmemory.FileBasedChatMemory;
 import com.wgd.wgdaiagent.rag.QueryRewriter;
 import jakarta.annotation.Resource;
@@ -12,18 +12,14 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
-import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
-import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Component;
 
-import java.awt.image.renderable.ContextualRenderedImageFactory;
 import java.util.List;
 
 @Component
@@ -32,7 +28,12 @@ public class LoveApp {
 
     private final ChatClient chatClient;
 
-    @Resource
+    /**
+     * 两个 profile 下 Bean 名都是 {@code loveAppVectorStore}（pgvector:
+     * {@code LoveAppPgVectorStoreConfig}；非 pgvector: {@code LoveAppVectorStoreConfig}），
+     * 所以按名字注入，不再靠类型兜底（规格 §1.1 缺陷 2）。
+     */
+    @Resource(name = "loveAppVectorStore")
     private VectorStore pgVectorVectorStore;
 
     @Resource
@@ -41,6 +42,10 @@ public class LoveApp {
     @Resource
     private QueryRewriter queryRewriter;
 
+    /** agent 内核（S3）；{@link #doChatWithAgent} 用，未注入时明确报错。 */
+    @Resource
+    private LoveAgent loveAgent;
+
 
     private static final String SYSTEM_PROMPT = "扮演深耕恋爱心理领域的专家。开场向用户表明身份，告知用户可倾诉恋爱难题。" +
             "围绕单身、恋爱、已婚三种状态提问：单身状态询问社交圈拓展及追求心仪对象的困扰；" +
@@ -48,7 +53,11 @@ public class LoveApp {
             "引导用户详述事情经过、对方反应及自身想法，以便给出专属解决方案。";
 
     /**
-     * 和 RAG 知识库进行对话
+     * 和 RAG 知识库进行对话（<b>单检索</b>）。
+     *
+     * <p>规格 §1.1 缺陷 1 修复：原来同时挂 {@code QuestionAnswerAdvisor}(0.8/topK6) 与
+     * {@code RetrievalAugmentationAdvisor}(0.5)，导致双检索 + 双上下文注入。现只保留后者：
+     * 阈值 0.5、{@code allowEmptyContext=true}（空结果时更稳），也是新 API。查询重写保留。</p>
      *
      * @param message
      * @param chatId
@@ -56,13 +65,7 @@ public class LoveApp {
      */
     public String doChatWithRag(String message, String chatId) {
 
-        //文档过滤
-        var qaAdvisor = QuestionAnswerAdvisor.builder(pgVectorVectorStore)
-                //相似阈值为0.8，并返回最相关的6个结果
-                .searchRequest(SearchRequest.builder().similarityThreshold(0.8d).topK(6).build())
-                .build();
-
-        //消息增强
+        // 检索增强（唯一的检索入口）
         Advisor retrievalAugmentationAdvisor = RetrievalAugmentationAdvisor.builder()
                 .documentRetriever(VectorStoreDocumentRetriever.builder()
                         .similarityThreshold(0.50)
@@ -83,11 +86,7 @@ public class LoveApp {
                 .advisors(advisorSpec -> advisorSpec.param(ChatMemory.CONVERSATION_ID, chatId))
                 // 开启日志，便于观察效果
                 .advisors(new MyLoggerAdvisor())
-                // 应用 RAG 知识库问答
-                //.advisors(new QuestionAnswerAdvisor(loveAppVectorStore))
                 // 应用 RAG 检索增强服务（基于 PgVector 向量存储）
-                .advisors(qaAdvisor)
-                //空上下文增强处理
                 .advisors(retrievalAugmentationAdvisor)
                 .call()
                 .chatResponse();
@@ -149,6 +148,17 @@ public class LoveApp {
                 .content();
     }
 
+    /**
+     * 走 Agent 内核（ReAct + 工具），便于本地调试；正式入口是 S4 的 controller/service。
+     *
+     * <p>参数顺序与 {@link LoveAgent#chat(String, String)} 一致：{@code (chatId, message)}。</p>
+     */
+    public String doChatWithAgent(String message, String chatId) {
+        if (loveAgent == null) {
+            throw new IllegalStateException("LoveAgent 未注入");
+        }
+        return loveAgent.chat(chatId, message);
+    }
 
 }
 
