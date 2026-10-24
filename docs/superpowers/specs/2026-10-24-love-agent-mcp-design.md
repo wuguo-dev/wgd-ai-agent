@@ -209,13 +209,13 @@
 
 - `chatId` 由客户端提供或服务端生成，格式 `^[A-Za-z0-9_-]{1,64}$`。`LoveAgent` 把它直接作为 `RunnableConfig.threadId`。
 - 每轮请求**只传本轮** `UserMessage`：`agent.call(new UserMessage(msg), RunnableConfig.builder().threadId(chatId).build())`。历史由 `FileSystemSaver` 按 threadId 自动恢复，**不能**再额外传完整历史（否则会重复追加）。
-- 持久化：`FileSystemSaver.builder().targetFolder(Path.of(user.dir, "chat-memory", "agent")).stateSerializer(new SpringAIStateSerializer()).build()`。目录已被 `.gitignore` 排除，重启不丢。
-- 降级：`FileSystemSaver` 构建/写入抛异常 → WARN 并退回 `new MemorySaver()`（同一进程内仍可用），不阻断启动与请求。
+- 持久化：`FileSystemSaver.builder().targetFolder(Path.of(user.dir, "chat-memory", "agent")).stateSerializer(new SpringAIJacksonStateSerializer(...)).build()`。序列化器必须与 ReactAgent 默认一致（用 `plain_text.jackson` 包下的 `SpringAIJacksonStateSerializer`，此前文中的 std 版 `SpringAIStateSerializer` 已废弃不用）。目录已被 `.gitignore` 排除，重启不丢。
+- 降级：**仅构造期**降级——`FileSystemSaver` 构建抛异常 → WARN 并退回 `new MemorySaver()`（同进程内仍可用），不阻断启动。**运行期**检查点写入失败不做静默降级：异常照常上抛，最终表现为 `INTERNAL_ERROR`（500 并记服务端堆栈），因为「写入失败还继续对话」会让下一轮恢复到半截状态，风险高于失败本身（S4/R2 审查后明确）。
 - 窗口：`HistoryWindowHook` 在每次模型调用前裁剪。裁剪规则（可单测）：
   1. 取最近 `window` 条；
   2. 若首条不是 `UserMessage`，向前扩展到最近的 `UserMessage`（保持「一问」起步）；
   3. 若某条 `ToolResponseMessage` 的前一条不是携带 toolCalls 的 `AssistantMessage`，继续向前保留该 `AssistantMessage`，避免产生孤儿工具结果。
-- 并发：同一 `chatId` 的请求在 service 层用 `ReentrantLock`（`ConcurrentHashMap<String, ReentrantLock>`）串行化，避免同一 threadId 的检查点竞争。
+- 并发：同一 `chatId` 的请求在 service 层串行化，避免同一 threadId 的检查点竞争。**实现采用固定 64 段互斥量（`Semaphore(1)`，索引 `floorMod(chatId.hashCode(), 64)`）而非 `ConcurrentHashMap<String, ReentrantLock>`**：per-session 锁表会随会话数无界增长；且流式任务可能在**与获取锁不同的线程**上终止（reactor `doFinally`），`ReentrantLock` 会抛 `IllegalMonitorStateException`。代价是极小概率哈希碰撞让两个不同 chatId 短暂互等（R2 审查后确认此偏差，效果符合原要求）。
 - 失败语义（重要）：检查点是**按节点**写入的，失败轮次可能留下已完成的中间状态（最坏情况是「assistant toolCall + toolResponse」这样自洽的一对）。因此约定：**失败轮次不主动回滚**，同一 `chatId` 下次调用会从该状态继续；接口层只负责把失败如实报给客户端。这与「只在成功时落盘」的旧记忆模型不同，是有意的取舍（§12 R7）。
 - `FileBasedChatMemory` 与 `chat-memory/*.kryo` 只服务 `LoveApp` 的旧 ChatClient 方法，与 agent 记忆**物理隔离**（不同子目录），互不读取。
 
@@ -352,7 +352,8 @@ prompt 加载失败（文件缺失/为空）→ 启动期抛 `IllegalStateExcept
    - 成功 → 包装成 `SyncMcpToolCallback`，INFO 打印工具名清单与数量，`available=true`；
    - 任一步异常/超时 → WARN `高德 MCP 不可用（<异常简单类名>），仅本地工具可用`，`close()`，返回空列表。**绝不上抛**。
 4. `LoveAgent` 用「本地 2 + MCP N」装配 `ReactAgent`；N=0 时照常构建。
-5. 校验 `toolset.available()` 与工具数一致，INFO 打印 `agent 就绪：本地工具=2，MCP 工具=N`。
+5. INFO 打印 `agent 就绪：本地工具=2，MCP 工具=N` 与完整工具名清单。**不做额外的「available 与工具数一致性断言」**：`available=false` 且 N=0 是合法降级态，再抛异常反而会把「没配 key 也能启动」这条硬要求打掉（R2 审查后修正）。
+6. 无 key / MCP 不可用时，**全流程只允许一条 WARN**（AC5）：由 `AmapMcpToolProvider` 打，`LoveAgent` 不再重复告警。
 
 启动期不做重连、不做后台探活（§11）。
 
@@ -442,7 +443,7 @@ data: {"chatId":"abc123","elapsedMs":4210}
 | MCP 不可达/超时 | connect/request timeout | 同上，启动最多 +3s | 1 条 WARN |
 | `listTools()` 返回空 | 工具数 0 | 视作不可用，WARN | 1 条 WARN |
 | 运行期 MCP 工具调用失败 | `ToolCallback.call` 抛异常 | `LoveToolExceptionProcessor` 返回 `工具 <name> 调用失败：<原因类别>。请基于已有信息继续回答，并如实告知用户该信息暂时无法获取。` | 每次 WARN |
-| 工具返回 `isError=true`（协议级） | 不抛异常 | 结果文本交给模型 | 仅 INFO（LoggingToolCallback） |
+| 工具返回 `isError=true`（协议级） | **实际会抛异常**（R2 字节码核实：`SyncMcpToolCallback` 在 isError 时抛 `ToolExecutionException`） | 走 `LoveToolExceptionProcessor` → WARN + 通用可读文案回喂模型；**工具原文不进上下文** | 每次 WARN |
 | `loveKbSearch` 抛异常 | tool 内部 catch | 返回检索失败文本，循环继续 | WARN（异常类型） |
 | `VectorStore` 缺失 | `getIfAvailable()` 为空 | 返回「知识库不可用」文本 | 每次 WARN（同会话 60s 一条） |
 | `FileSystemSaver` 初始化/写入失败 | 构造或 `call` 抛异常 | 启动降级 `MemorySaver`；运行期 WARN 并继续 | WARN |
