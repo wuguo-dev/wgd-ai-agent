@@ -490,7 +490,7 @@ data: {"chatId":"abc123","elapsedMs":4210}
 ### 7.4 日志与脱敏
 
 - 禁止打印含 `key=` 的完整 URL；MCP 日志只打 host、工具数、耗时、异常简单类名。
-- 禁止打印用户消息原文（隐私）：只打 `chatId`、字符数、耗时。
+- 禁止打印用户消息原文（隐私）：**INFO/WARN 级**只打 `chatId`、字符数、耗时。例外：`SimpleLoggerAdvisor` 在 `application.yml` 里被显式设为 `debug`，属本地排障开关，生产应调回 INFO；`MyLoggerAdvisor` 等自研日志一律只打长度（R1 审查后明确）。
 - 工具日志只打工具名、耗时、结果字符数（§5.3）。
 - 堆栈只在 `INTERNAL_ERROR`/`AGENT_LOOP_LIMIT` 时以 ERROR 完整记录（服务端），响应体只给通用文案。
 - 会话串统一前缀 `[chatId=xxx]`，便于 grep。
@@ -816,7 +816,8 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | R12 | SSE 客户端断开后仍消耗额度 | 成本 | 中 | `onError/onCompletion` 取消订阅 | 人工 `curl` 中途 Ctrl+C 后看无后续工具调用 |
 | R13 | `FileBasedChatMemory` 线程安全修复引入回归 | 旧接口异常 | 低 | 每会话锁 + 原子写 | T19/T20 |
 | R14 | `chatId` 作为 `threadId` 进入 saver 文件名（`thread-<chatId>.saver`） | 路径穿越 | 中 | 白名单正则三重校验（HTTP/service、`LoveAgent`、旧记忆类） | T17/T20 |
-| R15 | Knife4j 未扫描到新接口 | 文档缺失 | 低 | controller 放已配置的扫描包 | 启动后 `/api/doc.html` 可见两个端点 |
+| R15 | 接口文档不可见 | 文档缺失 | 低 | controller 放 `springdoc.group-configs.packages-to-scan` 指定的包 | 启动后 `/api/v3/api-docs` 200 且含两个 agent 端点 |
+| R19 | **接口文档 500（已发生并修复）**：原 `knife4j 4.5.0` 把 springdoc 钉在 2.3.0，与 Boot 3.4.4 的 Spring Framework 6.2.5 不兼容（`ControllerAdviceBean(Object)` 构造器已删除） | `/v3/api-docs`、`/doc.html` 全部 500 | **已消除** | 移除 knife4j，改用 `springdoc-openapi-starter-webmvc-ui` + `springdoc-openapi-bom:2.8.9` 锁版本；无任何 springdoc 版本能同时满足 knife4j 4.5.0 与 SF 6.2（S1 用 javap 逐版本验证，knife4j 4.6.0 不存在） | 真机实测：`/api/v3/api-docs`=200 且 paths 含两个 agent 端点、`/api/swagger-ui.html`→302→200、日志 0 次 `NoSuchMethodError` |
 | R16 | 检查点文件随会话增长无上限（仅上下文被裁剪） | 磁盘增长 | 低 | 单会话文本量小；目录可手工清理 | 长会话压测观察目录大小；超 10MB 再引入清理策略（非本轮） |
 | R17 | `AgentLlmNode` 把模型异常吞成 `"Exception: ..."` 文本（§3.4 源码事实），同步接口可能 200 + 错误文本 | 错误码失真、用户看到英文异常 | **高** | `LoveAgent.chat()` 兜底：优先走流式让异常冒泡 + `translate()` 沿 cause 链识别 `TransientAiException`；退路是哨兵 + 状态码分类，且绝不把该文本当答复 | 假模型抛 `TransientAiException` 的离线用例：`chat()` 必须抛异常或 `AGENT_UNAVAILABLE`；加一条「答复不含 `Exception: ` 前缀」断言 |
 | R18 | 裸 `ToolCallback`（非 `@Tool`/非 `SyncMcpToolCallback`）抛非 `ToolExecutionException` 时，`AgentToolNode` 会把 `e.getMessage()` 原样回喂模型（`AgentToolNode.executeSyncTool` 源码） | 异常信息泄漏进上下文 | 低（真实两条工具链都包成 `ToolExecutionException`） | 本轮沿用现状；新增工具必须走 `@Tool` 或经过包装 | reviewer 检查是否新增了裸 `ToolCallback`；如新增，要求包装成 `ToolExecutionException` |
