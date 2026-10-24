@@ -263,9 +263,14 @@
 
 ### 5.2 MCP 工具（高德）
 
-来源：`@amap/amap-maps-mcp-server@0.0.8` 的 `build/index.js`（实读）。托管端点预期暴露同名工具，一致性见 §12.2 V3。入参均为 `string`（高德 MCP 的 schema 未用数字类型）。
+来源：**以运行时 `listTools()` 为准（已用真实 key 实测，2026-10-24）**。托管端点 `https://mcp.amap.com/sse` 实际暴露 **15 个**工具，与 `@amap/amap-maps-mcp-server@0.0.8` 的 12 个**不完全一致**（V3 已闭环）：
 
-| # | 工具名（npm 包内名） | 用途 | 必填入参 | 可选入参 |
+- 命名差异：npm 包的 `maps_bicycling` 在托管端点是 **`maps_direction_bicycling`**；
+- 多出 3 个 `maps_schema_*` 工具：`maps_schema_personal_map`、`maps_schema_navi`、`maps_schema_take_taxi`（返回对应能力的入参 schema）。
+
+入参均为 `string`（高德 MCP 的 schema 未用数字类型）。
+
+| # | 实测工具名 | 用途 | 必填入参 | 可选入参 |
 | --- | --- | --- | --- | --- |
 | 1 | `maps_text_search` | 关键词搜 POI | `keywords` | `city`、`types` |
 | 2 | `maps_around_search` | 周边搜 POI | `location`（`经度,纬度`） | `keywords`、`radius` |
@@ -278,7 +283,12 @@
 | 9 | `maps_direction_driving` | 驾车路线 | `origin`、`destination` | — |
 | 10 | `maps_direction_walking` | 步行路线（≤100km） | `origin`、`destination` | — |
 | 11 | `maps_direction_transit_integrated` | 公交/地铁综合路线 | `origin`、`destination`、`city`、`cityd` | — |
-| 12 | `maps_bicycling` | 骑行路线（≤500km） | `origin`、`destination` | — |
+| 12 | `maps_direction_bicycling` | 骑行路线（≤500km） | `origin`、`destination` | — |
+| 13 | `maps_schema_navi` | 导航能力入参 schema | — | — |
+| 14 | `maps_schema_take_taxi` | 打车能力入参 schema | — | — |
+| 15 | `maps_schema_personal_map` | 个人地图能力入参 schema | — | — |
+
+实测证据（2026-10-24，真实 key）：启动日志 `agent 就绪：本地工具=2，MCP 工具=15`；完整清单 17 项 = 2 本地 + 上述 15 个；关键词「北京朝阳区适合约会的咖啡馆」触发 `maps_text_search` 两次（504ms / 460ms），答出真实 POI 名。
 
 坐标格式统一「经度,纬度」（如 `116.481488,39.990464`），prompt 必须写明，避免模型传成「纬度,经度」。
 
@@ -288,7 +298,7 @@
 - prompt、配置、测试断言一律**不写死工具名**；
 - `ReactAgent.build()` 时工具列表固化，MCP 工具增减必须重启（热更新属非目标）。
 
-token 成本：12 个工具定义约 1.2k–1.8k tokens/轮；若实测单轮输入超 8k，按 §12.3 用 `McpToolFilter` 收敛（本轮不做）。
+token 成本：**15** 个 MCP 工具定义约 1.5k–2.2k tokens/轮；若实测单轮输入超 8k，按 §12.3 用 `McpToolFilter` 收敛（本轮不做）。3 个 `maps_schema_*` 是可优先裁剪的候选。
 
 ### 5.3 工具暴露与装配
 
@@ -829,7 +839,7 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | --- | --- | --- | --- | --- |
 | V1 | MCP SDK 版本最终落到 0.17.0，且 `spring-ai-mcp` 与该版本 API 兼容 | 本地无 `mcp:0.17.0`/`spring-ai-mcp` 的 jar，只有 POM；必须联网解析 | 一次在线 `mvn -DskipTests compile`；`mvn dependency:tree -Dincludes=io.modelcontextprotocol.sdk` 只出现 0.17.0；S3 启动后完成一次 `initialize()+listTools()`（有 key 时）或无 key 启动不报 `NoSuchMethodError` | 若 0.17.0 与 Spring AI 1.1.2 不兼容，退到 0.14.0 并改用裸 `io.modelcontextprotocol.sdk` API（自行把工具转成 `ToolCallback`），仍保持「不依赖 starter」 |
 | V2 | starter 编译于 Boot 3.5.8 的包在 Boot 3.4.4 上是否可用 | 本方案不引入 starter，无法从本仓库验证；只能验证「没被带进来」 | `mvn dependency:tree -Dincludes=org.springframework.boot` 不得出现 `3.5.x`；`mvn dependency:tree -Dincludes=org.springframework.ai` 中 `spring-ai-*` 全部为 1.1.2 | 若将来必须引入 starter，先降级其传递的 Boot 版本，或整体升 Boot 到 3.5.x（单独评估） |
-| V3 | 高德托管端点实际暴露的工具名/入参与 npm 包 0.0.8 的 12 个工具是否一致 | 无 `AMAP_MCP_KEY`，且无效 key 只返回 `INVALID_USER_KEY`；任何探测都拿不到工具清单 | 有 key 时读启动日志 `高德 MCP 工具: [...]`，与 §5.2 对照；`LoveAgentLiveTest` 只断言语义不断言工具名 | 不一致时以日志为准更新 §5.2 与 prompt 的能力描述；若工具缺失（如无周边搜），退到 `maps_geo` + `maps_text_search` 组合 |
+| V3 | ~~高德托管端点实际暴露的工具名/入参与 npm 包 0.0.8 的 12 个工具是否一致~~ **已闭环（2026-10-24 真实 key 实测）** | 无 key 时无法探测 | 已实测：托管端点暴露 **15 个**，`maps_bicycling` 实际名为 `maps_direction_bicycling`，另有 3 个 `maps_schema_*`（详见 §5.2） | 已按日志更新 §5.2；prompt 仍只描述能力不写工具名，无需改动。若后续再变，以启动日志为准 |
 | V4 | 托管端点的 SSE 连接稳定性（代理、心跳、长连超时） | 无 key 无法建立有效流 | 有 key 时连续 20 次工具调用冒烟，统计失败率与首包延迟 | 失败率 >10% → 切 `AMAP_MCP_PROTOCOL=stdio`（`cmd /c npx`），或加部署层 SSE 透传配置 |
 | V5 | `systemPrompt` + `model`（不传 `chatClient`）时 `ReactAgent` 的 system 消息装配方式 | 只能靠离线假模型观察最终 `Prompt`，真实链路未跑 | T15 断言 + 有 key 冒烟观察模型是否遵守 prompt | 不符则改用 `.chatClient(...)` 分支（R4） |
 
