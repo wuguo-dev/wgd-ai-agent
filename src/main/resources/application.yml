@@ -66,4 +66,13 @@ love-app:
         command: cmd
         args: ["/c", "npx", "-y", "@amap/amap-maps-mcp-server"]
         env-key-name: AMAP_MAPS_API_KEY
+      # 工具白名单（D18）：实测托管端点暴露 15 个，默认屏蔽 3 个 schema 元工具 → 暴露 12 个。
+      # 规则：`*` 结尾做前缀匹配，否则全名精确匹配；配置是整体覆盖，自定义时记得带上 maps_schema_*。
+      exclude-tools: ["maps_schema_*"]
+  # 可选 API Key 鉴权 + 令牌桶限流（只保护 /ai/**）。
+  # api-key 为空 = 关闭鉴权、限流改按客户端 IP 计数，本地开发无需任何凭据。
+  security:
+    api-key: ${LOVE_APP_API_KEY:}
+    rate-limit-per-minute: ${LOVE_APP_RATE_LIMIT_PER_MINUTE:30}
+    rate-limit-burst: ${LOVE_APP_RATE_LIMIT_BURST:30}
 
