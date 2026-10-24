@@ -47,6 +47,8 @@ love-app:
     history-window: 20
     max-message-length: 2000
     sse-timeout: 60s
+    # 框架推理日志（system prompt / 工具入参 / 答复全文）默认关闭，仅本地排障时置 true（§7.4）
+    log-reasoning: ${LOVE_AGENT_LOG_REASONING:false}
     memory:
       type: ${LOVE_AGENT_MEMORY_TYPE:file}
       dir: ${LOVE_AGENT_MEMORY_DIR:chat-memory/agent}

@@ -29,6 +29,15 @@ public class AgentProperties {
     /** {@code SseEmitter} 超时。 */
     private Duration sseTimeout = Duration.ofSeconds(60);
 
+    /**
+     * 是否打开框架的推理日志（{@code ReactAgent.builder().enableLogging(...)}），<b>默认关闭</b>。
+     *
+     * <p>打开后 {@code AgentLlmNode} 会在 INFO 打印 system prompt、工具入参与答复全文，
+     * 与 §7.4「INFO/WARN 不打正文」冲突，仅供本地排障临时开启（环境变量
+     * {@code LOVE_AGENT_LOG_REASONING=true}）。</p>
+     */
+    private boolean logReasoning = false;
+
     /** 会话记忆（checkpoint saver）配置。 */
     private Memory memory = new Memory();
 

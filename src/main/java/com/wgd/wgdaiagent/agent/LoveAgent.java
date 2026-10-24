@@ -126,7 +126,8 @@ public class LoveAgent {
                 .hooks(new HistoryWindowHook(properties.getHistoryWindow()))
                 .compileConfig(compileConfig(saver))
                 .toolExecutionExceptionProcessor(new LoveToolExceptionProcessor())
-                .enableLogging(true)
+                // 默认关闭：打开后 AgentLlmNode 会在 INFO 打印 system prompt / 工具入参 / 答复全文（§7.4）
+                .enableLogging(properties.isLogReasoning())
                 .build();
 
         log.info("agent 就绪：本地工具={}，MCP 工具={}", localToolCount, mcpTools.size());
