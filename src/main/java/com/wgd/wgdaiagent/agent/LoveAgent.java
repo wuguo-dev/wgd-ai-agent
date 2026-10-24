@@ -18,6 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.retry.NonTransientAiException;
 import org.springframework.ai.retry.TransientAiException;
 import org.springframework.ai.support.ToolCallbacks;
@@ -29,6 +32,7 @@ import reactor.core.publisher.Flux;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
@@ -59,8 +63,17 @@ public class LoveAgent {
     /** 图递归上限：一轮内最多 8 步（D12）。 */
     static final int RECURSION_LIMIT = 8;
 
-    /** AgentLlmNode 读的框架元数据：置 false 走非流式（同步接口用）。 */
-    static final String STREAM_METADATA_KEY = "_stream_";
+    /** 判定模型层异常时向下钻 cause 链的最大深度。 */
+    private static final int MAX_CAUSE_DEPTH = 16;
+
+    /** 框架把模型异常伪装成答复时的前缀（{@code AgentLlmNode} 硬编码）。 */
+    static final String FRAMEWORK_ERROR_PREFIX = "Exception: ";
+
+    /** 日志脱敏：{@code key=...} 片段。 */
+    private static final Pattern KEY_PATTERN = Pattern.compile("key=[^&\\s]+");
+
+    /** 日志里允许出现的异常文本长度。 */
+    private static final int MAX_LOG_TEXT_LENGTH = 200;
 
     private static final String AGENT_NAME = "love_agent";
 
@@ -71,6 +84,9 @@ public class LoveAgent {
     private final List<String> toolNames;
 
     private final int localToolCount;
+
+    /** 记住模型层失败，用于把被框架吞成文本的异常还原成原始类型。 */
+    private final ChatModelFailureRecorder chatModelFailureRecorder;
 
     public LoveAgent(ChatModel dashscopeChatModel,
                      AgentProperties properties,
@@ -96,10 +112,14 @@ public class LoveAgent {
                 .map(callback -> callback.getToolDefinition().name())
                 .toList();
 
+        // 包一层：AgentLlmNode 会把模型异常吞成 "Exception: ..." 文本，这里把原始异常记下来，
+        // 供 chat() 还原成 TransientAiException/NonTransientAiException（§7.3 的 503/502 判据）
+        this.chatModelFailureRecorder = new ChatModelFailureRecorder(dashscopeChatModel);
+
         BaseCheckpointSaver saver = AgentCheckpointSaver.create(properties.getMemory());
         this.agent = ReactAgent.builder()
                 .name(AGENT_NAME)
-                .model(dashscopeChatModel)
+                .model(chatModelFailureRecorder)
                 .systemPrompt(promptLoader.text())
                 .tools(allTools)
                 .hooks(new HistoryWindowHook(properties.getHistoryWindow()))
@@ -118,10 +138,11 @@ public class LoveAgent {
     /**
      * 同步问答。
      *
-     * <p>注意：{@code AgentLlmNode} 在非流式分支里 {@code catch (Exception)} 后会把模型异常
-     * 转成 {@code "Exception: ..."} 文本当作答复返回，所以同步路径上的 429/5xx 不一定以异常
-     * 形式冒到这里（流式路径的异常发生在订阅期，能正常冒泡）。{@link #chat} 只能保证：
-     * 凡是冒到本方法的模型层异常，一律原样上抛给接口层。</p>
+     * <p>用 {@code agent.call(...)} 取最终答复（框架的 call 路径固定走非流式，无法像
+     * {@link #stream(String, String)} 那样让异常在订阅期冒泡）。因此模型层失败通过
+     * {@link ChatModelFailureRecorder} 在模型返回处捕获并还原成原始类型，保证
+     * {@code TransientAiException}/{@code NonTransientAiException} 能到接口层（§7.3 的 503/502）；
+     * 万一失败没被记录到，{@code "Exception: ..."} 哨兵文本也会被拦下，绝不作为答复返回。</p>
      *
      * @param chatId  会话 ID（白名单 {@code ^[A-Za-z0-9_-]{1,64}$}），直接作为 checkpoint 的 threadId
      * @param message 本轮用户消息；历史由 saver 恢复，调用方只需传本轮内容
@@ -130,14 +151,16 @@ public class LoveAgent {
     public String chat(String chatId, String message) {
         String threadId = requireValidChatId(chatId);
         long startedAt = System.nanoTime();
+        chatModelFailureRecorder.clear();
         try {
-            // 同步接口不需要 token 级流：显式走非流式，结果确定、少一层聚合
-            RunnableConfig config = RunnableConfig.builder()
-                    .threadId(threadId)
-                    .addMetadata(STREAM_METADATA_KEY, false)
-                    .build();
+            RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
             AssistantMessage assistantMessage = agent.call(new UserMessage(message), config);
-            String answer = extractAnswer(assistantMessage);
+            RuntimeException modelFailure = chatModelFailureRecorder.getAndClear();
+            if (modelFailure != null) {
+                // 框架把异常吞成了 "Exception: ..." 文本，这里还原成原始类型上抛
+                throw translate(modelFailure, threadId);
+            }
+            String answer = extractAnswer(assistantMessage, threadId);
             log.info("[chatId={}] chat 完成 elapsedMs={} answerChars={}",
                     threadId, (System.nanoTime() - startedAt) / 1_000_000L, answer.length());
             return answer;
@@ -145,6 +168,8 @@ public class LoveAgent {
             throw translate(e, threadId);
         } catch (RuntimeException e) {
             throw translate(e, threadId);
+        } finally {
+            chatModelFailureRecorder.clear();
         }
     }
 
@@ -207,7 +232,7 @@ public class LoveAgent {
                 .build();
     }
 
-    private static String extractAnswer(AssistantMessage assistantMessage) {
+    private static String extractAnswer(AssistantMessage assistantMessage, String threadId) {
         if (assistantMessage == null) {
             throw new LoveAgentException(AgentErrorCode.INTERNAL_ERROR, "模型未返回任何结果");
         }
@@ -217,7 +242,44 @@ public class LoveAgent {
                     "工具循环超过上限（" + RECURSION_LIMIT + " 步）仍未得出结论");
         }
         String text = assistantMessage.getText();
-        return text == null ? "" : text;
+        if (text == null) {
+            return "";
+        }
+        if (looksLikeFrameworkError(text)) {
+            // 最后一道防线：框架把异常吞成了文本，且没走到记录器（异常并非由模型抛出）
+            log.warn("[chatId={}] 拦截框架吞下的模型异常文本（{}）", threadId, sanitize(text));
+            throw new LoveAgentException(classifyFrameworkError(text), "模型调用失败，请稍后重试");
+        }
+        return text;
+    }
+
+    /** 框架在 {@code AgentLlmNode} 里用 {@code "Exception: " + message} 伪装成答复。 */
+    private static boolean looksLikeFrameworkError(String text) {
+        return text.regionMatches(true, 0, FRAMEWORK_ERROR_PREFIX, 0, FRAMEWORK_ERROR_PREFIX.length());
+    }
+
+    /** 只剩分类用途：真正的原因已经在 {@link ChatModelFailureRecorder} 里还原成原始异常。 */
+    private static AgentErrorCode classifyFrameworkError(String text) {
+        String lower = text.toLowerCase(Locale.ROOT);
+        if (containsAny(lower, "429", "throttling", "rate limit", "too many requests", "timed out", "timeout")) {
+            return AgentErrorCode.AGENT_UNAVAILABLE;
+        }
+        return AgentErrorCode.AGENT_ERROR;
+    }
+
+    private static boolean containsAny(String text, String... needles) {
+        for (String needle : needles) {
+            if (text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 日志脱敏：抹掉 key 片段并把正文截断（§7.4）。 */
+    static String sanitize(String text) {
+        String masked = KEY_PATTERN.matcher(text).replaceAll("key=***");
+        return masked.length() <= MAX_LOG_TEXT_LENGTH ? masked : masked.substring(0, MAX_LOG_TEXT_LENGTH) + "...";
     }
 
     private static String requireValidChatId(String chatId) {
@@ -228,10 +290,11 @@ public class LoveAgent {
         return chatId;
     }
 
-    /** 异常翻译：模型层异常原样穿透，其余归一成内核异常。 */
+    /** 异常翻译：模型层异常（可能在 cause 链里）原样穿透，其余归一成内核异常。 */
     private static RuntimeException translate(Throwable error, String threadId) {
-        if (error instanceof TransientAiException || error instanceof NonTransientAiException) {
-            return (RuntimeException) error;
+        RuntimeException modelException = findModelException(error);
+        if (modelException != null) {
+            return modelException;
         }
         if (error instanceof LoveAgentException loveAgentException) {
             return loveAgentException;
@@ -247,6 +310,25 @@ public class LoveAgent {
         return new LoveAgentException(AgentErrorCode.INTERNAL_ERROR, "agent 内部错误", error);
     }
 
+    /**
+     * 沿 cause 链下钻找模型层异常：框架会把它包进 {@code GraphRunnerException} 或
+     * {@code CompletionException}，而接口层需要原始类型来做 503/502 判定。
+     */
+    private static RuntimeException findModelException(Throwable error) {
+        Throwable current = error;
+        // 加深度上限，防止异常链自身成环时不返回
+        for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+            if (current instanceof TransientAiException || current instanceof NonTransientAiException) {
+                return (RuntimeException) current;
+            }
+            if (current.getCause() == current) {
+                return null;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
     private static boolean isLoopLimit(Throwable error) {
         for (Throwable current = error; current != null; current = current.getCause()) {
             String message = current.getMessage();
@@ -258,5 +340,57 @@ public class LoveAgent {
             }
         }
         return false;
+    }
+
+    /**
+     * {@link ChatModel} 装饰器：只做一件事——把模型抛出的异常记在<b>当前线程</b>上。
+     *
+     * <p>必须这么做，因为 {@code AgentLlmNode} 的两个分支都会 {@code catch (Exception)} 后把
+     * 异常变成 {@code "Exception: " + message} 的答复文本，导致 429/401 退化成 HTTP 200 的假答复
+     * （规格 §7.3 要求 429→503、401/403→502）。记录器让 {@code chat()} 能拿回原始异常类型，
+     * 同时不做任何文本猜测。用 {@link ThreadLocal} 是因为 {@code chat()} 是同步调用、图在调用线程上跑，
+     * 这样并发会话之间不会串。
+     */
+    static final class ChatModelFailureRecorder implements ChatModel {
+
+        private final ChatModel delegate;
+
+        private final ThreadLocal<RuntimeException> lastFailure = new ThreadLocal<>();
+
+        ChatModelFailureRecorder(ChatModel delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            try {
+                return delegate.call(prompt);
+            } catch (RuntimeException e) {
+                lastFailure.set(e);
+                throw e;
+            }
+        }
+
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            return delegate.stream(prompt);
+        }
+
+        @Override
+        public ChatOptions getDefaultOptions() {
+            return delegate.getDefaultOptions();
+        }
+
+        RuntimeException getAndClear() {
+            try {
+                return lastFailure.get();
+            } finally {
+                lastFailure.remove();
+            }
+        }
+
+        void clear() {
+            lastFailure.remove();
+        }
     }
 }
