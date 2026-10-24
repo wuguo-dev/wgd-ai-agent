@@ -15,9 +15,11 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -127,6 +129,20 @@ class LoveAgentControllerTest {
                 .andExpect(jsonPath("$.code").value("AGENT_UNAVAILABLE"));
     }
 
+    @Test
+    void malformedJsonReturnsUnified400Error() throws Exception {
+        mockMvc.perform(post(CHAT_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"chatId\":\"abc\",\"message\":}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value("请求体格式不正确，需要 JSON"))
+                .andExpect(jsonPath("$.chatId").value(nullValue()));
+
+        verifyNoInteractions(chatService);
+    }
+
     // ---------- T26 流式端点 ----------
 
     @Test
@@ -155,6 +171,28 @@ class LoveAgentControllerTest {
                 .andExpect(content().string(containsString("data:{\"chatId\":\"abc\",\"delta\":\"A\"}")))
                 .andExpect(content().string(containsString("event:done")))
                 .andExpect(content().string(containsString("data:{\"chatId\":\"abc\",\"elapsedMs\":12}")));
+    }
+
+    @Test
+    void streamThatCompletesImmediatelyOnSubscriptionIsHandledWithoutDangling() throws Exception {
+        // 订阅期立刻完成：onCompletion 可能先于 controller 的 swap.update 触发；
+        // Swap 保证迟到的 update 立即释放订阅，请求仍正常收尾（不悬挂、不重复发送）。
+        when(chatService.stream(any())).thenReturn(
+                Flux.just(LoveAgentStreamEvent.done("abc", 5L)));
+
+        MvcResult result = mockMvc.perform(post(STREAM_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .content("{\"chatId\":\"abc\",\"message\":\"你好\"}"))
+                .andExpect(status().isOk())
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        result.getAsyncResult(5_000L);
+        mockMvc.perform(asyncDispatch(result))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("event:done")))
+                .andExpect(content().string(containsString("data:{\"chatId\":\"abc\",\"elapsedMs\":5}")));
     }
 
     @Test

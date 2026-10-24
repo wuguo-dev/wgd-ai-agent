@@ -51,7 +51,7 @@ class GlobalExceptionHandlerTest {
     })
     void loveAgentExceptionMapsToHttpStatus(AgentErrorCode code, int expectedStatus) {
         ResponseEntity<AgentErrorResponse> response = handler.handleLoveAgentException(
-                new LoveAgentException(code, "测试错误"));
+                new LoveAgentException(code, "测试错误"), request());
 
         assertThat(response.getStatusCode().value()).isEqualTo(expectedStatus);
         assertThat(response.getBody()).isNotNull();
@@ -65,7 +65,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void transientAiExceptionMapsTo503Unavailable() {
         ResponseEntity<AgentErrorResponse> response = handler.handleTransientAiException(
-                new TransientAiException("429 rate limit"));
+                new TransientAiException("429 rate limit"), request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(response.getBody()).isNotNull();
@@ -76,7 +76,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void nonTransientAiExceptionMapsTo502AgentError() {
         ResponseEntity<AgentErrorResponse> response = handler.handleNonTransientAiException(
-                new NonTransientAiException("401 unauthorized"));
+                new NonTransientAiException("401 unauthorized"), request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
         assertThat(response.getBody()).isNotNull();
@@ -108,7 +108,8 @@ class GlobalExceptionHandlerTest {
         when(violation.getMessage()).thenReturn("chatId 只允许 1-64 位字母、数字、下划线或短横线");
         ConstraintViolationException exception = new ConstraintViolationException("bad", Set.of(violation));
 
-        ResponseEntity<AgentErrorResponse> response = handler.handleConstraintViolationException(exception);
+        ResponseEntity<AgentErrorResponse> response = handler.handleConstraintViolationException(
+                exception, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody()).isNotNull();
@@ -121,7 +122,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void unexpectedExceptionMapsTo500WithoutInternals() throws Exception {
         ResponseEntity<AgentErrorResponse> response = handler.handleUnexpectedException(
-                new IllegalStateException("jdbc:postgresql://secret-host/db password=topsecret"));
+                new IllegalStateException("jdbc:postgresql://secret-host/db password=topsecret"), request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(response.getBody()).isNotNull();
@@ -135,6 +136,13 @@ class GlobalExceptionHandlerTest {
                 .doesNotContain("secret")
                 .doesNotContain("jdbc")
                 .doesNotContain("topsecret");
+    }
+
+    /** 造一个带 path 的 servlet 请求：日志需要 path，断言不依赖它。 */
+    private static MockHttpServletRequest request() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/api/ai/love/agent/chat");
+        return request;
     }
 
     /** 造一个「请求体字段校验失败」的异常：绑定结果是 message 字段的错误。 */

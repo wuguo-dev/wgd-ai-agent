@@ -14,12 +14,14 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import reactor.core.Disposables;
 import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 
@@ -34,7 +36,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * 业务（chatId 生成、调 agent、组响应、异常翻译）全在 {@link LoveAgentChatService}。</p>
  *
  * <p>注意 context-path 已是 {@code /api}，所以这里只写 {@code /ai/love/agent}。
- * 本类必须留在 {@code com.wgd.wgdaiagent.controller} 包：Knife4j 只扫这个包（R15）。</p>
+ * 本类必须留在 {@code com.wgd.wgdaiagent.controller} 包：springdoc 的
+ * {@code springdoc.group-configs.packages-to-scan}（{@code application.yml}）只扫这个包，
+ * 新 controller 也必须落在这里，否则 {@code /swagger-ui.html} 看不到。</p>
  */
 @Slf4j
 @RestController
@@ -92,15 +96,15 @@ public class LoveAgentController {
         Flux<LoveAgentStreamEvent> events = chatService.stream(request);
 
         SseEmitter emitter = new SseEmitter(properties.getSseTimeout().toMillis());
-        AtomicReference<Disposable> subscription = new AtomicReference<>();
+        // 用 Swap 而不是 AtomicReference<Disposable>：若 flux 在订阅期就同步完成（onCompletion 先于
+        // 本方法的 update 触发），Swap 会记录「已释放」状态，迟到的 update(d) 立即 dispose(d)，
+        // 订阅不会被漏掉。
+        Disposable.Swap subscription = Disposables.swap();
         AtomicReference<String> lastChatId = new AtomicReference<>();
         AtomicBoolean closed = new AtomicBoolean(false);
         Runnable cancel = () -> {
             closed.set(true);
-            Disposable current = subscription.get();
-            if (current != null) {
-                current.dispose();
-            }
+            subscription.dispose();
         };
         // 客户端断开/超时/错误：取消订阅即可；检查点已由框架按节点写入，不回滚（§4.4 / R12）
         emitter.onCompletion(cancel);
@@ -110,7 +114,7 @@ public class LoveAgentController {
         });
         emitter.onError(error -> cancel.run());
 
-        subscription.set(events
+        subscription.update(events
                 // 不占用 servlet 请求线程：订阅整体挪到 boundedElastic，controller 立即返回 emitter
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe(event -> {
@@ -121,13 +125,18 @@ public class LoveAgentController {
                         },
                         error -> {
                             // 兜底：service 已把异常翻译成 error 帧，正常不会走到这里
-                            log.error("SSE 事件流异常终止", error);
+                            log.error("[chatId={}] SSE 事件流异常终止", chatIdOrUnknown(lastChatId.get()), error);
                             send(emitter, LoveAgentStreamEvent.error(lastChatId.get(),
                                     AgentErrorCode.INTERNAL_ERROR.name(), INTERNAL_MESSAGE), closed, cancel);
                             completeQuietly(emitter);
                         },
                         () -> completeQuietly(emitter)));
         return emitter;
+    }
+
+    /** §7.4：会话日志统一 {@code [chatId=xxx]} 前缀；拿不到 chatId 时如实写 {@code ?}，不编造。 */
+    private static String chatIdOrUnknown(String chatId) {
+        return StringUtils.hasText(chatId) ? chatId : "?";
     }
 
     /** 建流前校验：上限取 {@code AgentProperties.getMaxMessageLength()}，默认 2000。 */
@@ -154,11 +163,13 @@ public class LoveAgentController {
                     .name(event.eventName())
                     .data(json, MediaType.APPLICATION_JSON));
         } catch (JsonProcessingException error) {
-            log.error("SSE 事件序列化失败（{}）", error.getClass().getSimpleName());
+            log.error("[chatId={}] SSE 事件序列化失败（{}）",
+                    chatIdOrUnknown(event.chatId()), error.getClass().getSimpleName());
             cancel.run();
             completeQuietly(emitter);
         } catch (IOException | IllegalStateException error) {
-            log.debug("SSE 发送失败（{}），取消订阅", error.getClass().getSimpleName());
+            log.debug("[chatId={}] SSE 发送失败（{}），取消订阅",
+                    chatIdOrUnknown(event.chatId()), error.getClass().getSimpleName());
             cancel.run();
             completeQuietly(emitter);
         }
