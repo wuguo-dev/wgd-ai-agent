@@ -82,6 +82,14 @@ public class AgentProperties {
 
         private Duration requestTimeout = Duration.ofSeconds(20);
 
+        /**
+         * 需要排除的 MCP 工具名；支持 {@code *} 结尾的前缀通配。默认屏蔽 3 个 schema 元工具（D18）。
+         *
+         * <p>匹配规则（大小写敏感）：以 {@code *} 结尾 → 前缀匹配；否则全名精确匹配。
+         * 排除后一个工具都不剩时按「不可用」降级。</p>
+         */
+        private List<String> excludeTools = List.of("maps_schema_*");
+
         private Stdio stdio = new Stdio();
 
         public enum Protocol {

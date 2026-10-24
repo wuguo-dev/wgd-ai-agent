@@ -109,8 +109,27 @@ public class AmapMcpToolProvider {
                 return new McpToolset(List.of(), false, "listTools 为空");
             }
 
-            List<ToolCallback> callbacks = new ArrayList<>(tools.size());
+            // D18：白名单过滤。工具名以 listTools() 返回的原始名为准，不写死任何名字
+            List<String> excludeTools = excludeTools();
+            List<McpSchema.Tool> exposedTools = new ArrayList<>(tools.size());
+            List<String> excludedToolNames = new ArrayList<>();
             for (McpSchema.Tool tool : tools) {
+                if (isExcluded(tool.name(), excludeTools)) {
+                    excludedToolNames.add(tool.name());
+                } else {
+                    exposedTools.add(tool);
+                }
+            }
+            if (exposedTools.isEmpty()) {
+                // 全被排掉时不能留「available=true 但没有工具」的怪状态
+                log.warn("高德 MCP 工具已全部被 exclude-tools 排除（原始 {} 个，排除 {} 个 {}），仅本地工具可用",
+                        tools.size(), excludedToolNames.size(), excludedToolNames);
+                closeQuietly(client);
+                return new McpToolset(List.of(), false, "工具已全部被 exclude-tools 排除");
+            }
+
+            List<ToolCallback> callbacks = new ArrayList<>(exposedTools.size());
+            for (McpSchema.Tool tool : exposedTools) {
                 // 用非弃用的 builder：2 参构造器已 @Deprecated，且会拿 clientInfo.name 当前缀，
                 // 让模型看到的工具名变成 <client>_<tool>。这里不加前缀，名字与 listTools() 一致（D16）。
                 callbacks.add(SyncMcpToolCallback.builder()
@@ -119,8 +138,11 @@ public class AmapMcpToolProvider {
                         .prefixedToolName(McpToolUtils.format(tool.name()))
                         .build());
             }
+            log.info("高德 MCP 工具：原始 {} 个，暴露 {} 个，排除 {} 个{}",
+                    tools.size(), callbacks.size(), excludedToolNames.size(),
+                    excludedToolNames.isEmpty() ? "" : " " + excludedToolNames);
             // 工具名以运行时 listTools() 为准（D16），这里打的就是模型实际看到的名字
-            log.info("高德 MCP 工具 {} 个: {}",
+            log.info("高德 MCP 曝光工具 {} 个: {}",
                     callbacks.size(), callbacks.stream().map(callback -> callback.getToolDefinition().name()).toList());
             return new McpToolset(callbacks, true, STATUS_OK);
         } catch (Exception e) {
@@ -129,6 +151,36 @@ public class AmapMcpToolProvider {
             closeQuietly(client);
             return new McpToolset(List.of(), false, e.getClass().getSimpleName());
         }
+    }
+
+    private List<String> excludeTools() {
+        AgentProperties.Mcp mcp = properties.getMcp();
+        return mcp == null || mcp.getExcludeTools() == null ? List.of() : mcp.getExcludeTools();
+    }
+
+    /**
+     * 白名单匹配：entry 以 {@code *} 结尾 → 前缀匹配（{@code maps_schema_*} 命中
+     * {@code maps_schema_navi}）；否则全名精确匹配（{@code maps_weather} 不命中
+     * {@code maps_weather_extra}）。大小写敏感，空 entry 忽略。包可见，便于单测。
+     */
+    static boolean isExcluded(String toolName, List<String> excludeTools) {
+        if (toolName == null || excludeTools == null || excludeTools.isEmpty()) {
+            return false;
+        }
+        for (String entry : excludeTools) {
+            if (entry == null || entry.isBlank()) {
+                continue;
+            }
+            String pattern = entry.trim();
+            if (pattern.endsWith("*")) {
+                if (toolName.startsWith(pattern.substring(0, pattern.length() - 1))) {
+                    return true;
+                }
+            } else if (toolName.equals(pattern)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<McpSchema.Tool> listTools(McpSyncClient client) {
