@@ -33,6 +33,19 @@ mvn -DskipTests package
 java -jar target/wgd-ai-agent-0.0.1-SNAPSHOT.jar
 ```
 
+## 聊天页
+
+启动后访问 <http://localhost:8123/api/index.html>：流式打字机输出、同一会话复用 `chatId`、可填写 `X-API-Key`。
+
+页面是单文件静态资源（`src/main/resources/static/index.html`），**零外链依赖**（无 CDN、无前端构建链），断网也能打开。
+
+接口与页面共用的错误码：
+
+| 场景 | HTTP | code |
+| --- | --- | --- |
+| 启用鉴权但 Key 缺失/错误 | 401 | `UNAUTHORIZED` |
+| 超出限流额度（响应头带 `Retry-After`） | 429 | `RATE_LIMITED` |
+
 ## 依赖从哪来：阿里云镜像
 
 **为什么必须配镜像**：本机到 Maven Central 的连接不可用（`curl` 返回 000），只有
@@ -80,6 +93,13 @@ mvn -o validate -X 2>&1 | Select-String "Reading user settings"   # 应指向 <�
 | `PGVECTOR_JDBC_URL` / `PGVECTOR_USERNAME` / `PGVECTOR_PASSWORD` | 本地已有 | 知识库连接（既有配置） |
 | `PGVECTOR_INITIALIZE_SCHEMA` | 否 | 是否在启动时创建 pgvector 扩展/表/索引，默认 `true` |
 | `LOVE_APP_ETL_ENABLED` | 否 | 仅导入/更新知识库时置 `true`，否则每次启动都会重算 Embedding |
+| `LOVE_APP_API_KEY` | 否 | 非空则启用 API Key 鉴权（只保护 `/ai/**`；`/hello`、接口文档、聊天页不受影响） |
+| `LOVE_APP_RATE_LIMIT_PER_MINUTE` / `LOVE_APP_RATE_LIMIT_BURST` | 否 | 令牌桶限流（默认 30/30）；超限 429 + `Retry-After`；未启用鉴权时按客户端 IP 计数 |
+| `LOVE_AGENT_LOG_REASONING` | 否 | 设 `true` 才打印框架推理日志（含 system prompt / 工具入参 / 答复全文），默认关闭 |
+
+> MCP 工具白名单：高德托管端点实测暴露 15 个工具，默认屏蔽 3 个 `maps_schema_*` 元工具（暴露 12 个），
+> 见 `love-app.agent.mcp.exclude-tools`（默认 `["maps_schema_*"]`）。匹配规则：`*` 结尾做前缀匹配，否则全名精确匹配；
+> 该配置是**整体覆盖**，自定义时记得带上 `maps_schema_*`，否则元工具会重新暴露。
 
 PowerShell 设置示例（只对当前进程生效）：
 
