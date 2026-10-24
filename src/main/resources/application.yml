@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: wgd-ai-agent
+  profiles:
+    active: local,pgvector
+  ai:
+    retry:
+      # 总尝试次数包含首次调用；429 限流时等待后重试。
+      max-attempts: 4
+      on-client-errors: false
+      on-http-codes: [429]
+      backoff:
+        initial-interval: 10s
+        multiplier: 2
+        max-interval: 40s
+
+server:
+  port: 8123
+  servlet:
+    context-path: /api
+# springdoc-openapi 接口文档配置
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+  group-configs:
+    - group: 'default'
+      paths-to-match:
+        - '/**'
+      packages-to-scan:
+        - com.wgd.wgdaiagent.controller
+# knife4j
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+#springAI advisor日志
+logging:
+  level:
+    org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: debug
+

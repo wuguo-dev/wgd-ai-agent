@@ -1,0 +1,27 @@
+# 默认与 local profile 一起启用；数据库连接配置在 application-local.yml。
+# 向量库参数由 LoveAppPgVectorStoreConfig 显式读取，不依赖 PGVector Starter 自动配置。
+# 适用于支持 pgvector 扩展的 PostgreSQL；不代表已验证兼容 AnalyticDB 的其他向量插件。
+spring:
+  ai:
+    dashscope:
+      embedding:
+        options:
+          model: text-embedding-v2
+    vectorstore:
+      pgvector:
+        # text-embedding-v2 对应 1536 维；更换模型时需同步检查表结构和维度。
+        dimensions: 1536
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        schema-name: public
+        table-name: love_app_vector_store
+        # 首次启动创建缺失的扩展、表和索引；后续可通过环境变量关闭。
+        initialize-schema: ${PGVECTOR_INITIALIZE_SCHEMA:true}
+        # 手动配置类固定禁止删表；此处保留 false 说明当前策略。
+        remove-existing-vector-store-table: false
+
+love-app:
+  rag:
+    etl:
+      # 首次导入或更新文档时才开启；正常问答关闭，避免每次启动重新计算 Embedding。
+      enabled: ${LOVE_APP_ETL_ENABLED:false}
