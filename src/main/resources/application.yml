@@ -42,3 +42,29 @@ logging:
   level:
     org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: debug
 
+# 恋爱大师 Agent（工具层 + ReAct 内核）配置，规格 §8.1/§8.2。
+# 只有环境变量名，没有 key 值：key 的唯一来源是进程环境变量 AMAP_MCP_KEY，
+# 未设置时默认空串 → 启动期降级为「仅本地工具」，不报错（AC5/§8.4）。
+love-app:
+  agent:
+    history-window: 20
+    max-message-length: 2000
+    sse-timeout: 60s
+    memory:
+      type: ${LOVE_AGENT_MEMORY_TYPE:file}
+      dir: ${LOVE_AGENT_MEMORY_DIR:chat-memory/agent}
+    mcp:
+      enabled: ${AMAP_MCP_ENABLED:true}
+      protocol: ${AMAP_MCP_PROTOCOL:sse}
+      key: ${AMAP_MCP_KEY:}
+      # 只到 host：query 由代码拼到端点里（URI.resolve 会丢弃 base 上的 query）
+      base-url: ${AMAP_MCP_BASE_URL:https://mcp.amap.com}
+      sse-path: ${AMAP_MCP_SSE_PATH:/sse}
+      connect-timeout: 3s
+      request-timeout: 20s
+      stdio:
+        # Windows 下直接执行 npx(.cmd) 会失败，故经 cmd /c 启动
+        command: cmd
+        args: ["/c", "npx", "-y", "@amap/amap-maps-mcp-server"]
+        env-key-name: AMAP_MAPS_API_KEY
+
