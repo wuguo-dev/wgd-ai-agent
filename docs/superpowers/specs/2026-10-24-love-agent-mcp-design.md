@@ -490,7 +490,7 @@ data: {"chatId":"abc123","elapsedMs":4210}
 ### 7.4 日志与脱敏
 
 - 禁止打印含 `key=` 的完整 URL；MCP 日志只打 host、工具数、耗时、异常简单类名。
-- 禁止打印用户消息原文（隐私）：**INFO/WARN 级**只打 `chatId`、字符数、耗时。例外：`SimpleLoggerAdvisor` 在 `application.yml` 里被显式设为 `debug`，属本地排障开关，生产应调回 INFO；`MyLoggerAdvisor` 等自研日志一律只打长度（R1 审查后明确）。
+- 禁止打印用户消息原文（隐私）：**INFO/WARN 级**只打 `chatId`、字符数、耗时。例外一：`SimpleLoggerAdvisor` 在 `application.yml` 里被显式设为 `debug`，属本地排障开关，生产应调回 INFO；`MyLoggerAdvisor` 等自研日志一律只打长度（R1 审查后明确）。**例外二（真机冒烟后新增）**：`ReactAgent.Builder.enableLogging(true)` 会让框架 `AgentLlmNode` 在 **INFO** 打印 system prompt、工具入参与答复全文，因此改为由 `love-app.agent.log-reasoning`（环境变量 `LOVE_AGENT_LOG_REASONING`）控制，**默认 `false`**；本地排障时才打开。`LoggingToolCallback` 的 `tool=… elapsedMs=… resultChars=…` 不受影响（AC3 依赖它）。
 - 工具日志只打工具名、耗时、结果字符数（§5.3）。
 - 堆栈只在 `INTERNAL_ERROR`/`AGENT_LOOP_LIMIT` 时以 ERROR 完整记录（服务端），响应体只给通用文案。
 - 会话串统一前缀 `[chatId=xxx]`，便于 grep。
@@ -505,6 +505,7 @@ data: {"chatId":"abc123","elapsedMs":4210}
 | --- | --- | --- | --- | --- |
 | `history-window` | int | `20` | — | `HistoryWindowHook` 每次模型调用前保留的消息条数 |
 | `max-message-length` | int | `2000` | — | 单条用户消息上限 |
+| `log-reasoning` | boolean | `false` | `LOVE_AGENT_LOG_REASONING` | 是否开启框架推理日志（开启后 INFO 会打印 system prompt、工具入参与答复全文，仅供排障） |
 | `sse-timeout` | Duration | `60s` | — | `SseEmitter` 超时 |
 | `memory.type` | enum | `file` | `LOVE_AGENT_MEMORY_TYPE` | `file`=FileSystemSaver，`memory`=MemorySaver |
 | `memory.dir` | String | `chat-memory/agent` | `LOVE_AGENT_MEMORY_DIR` | 相对 `user.dir` |
