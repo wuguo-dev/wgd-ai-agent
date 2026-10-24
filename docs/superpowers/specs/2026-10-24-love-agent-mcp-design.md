@@ -175,8 +175,7 @@
 
 | 组件 | 类型 | 职责 | 不做 | 波次 |
 | --- | --- | --- | --- | --- |
-| `agent/LoveAgent` | `@Component` | 启动期装配唯一 `ReactAgent`（model + `systemPrompt` + tools + hooks + saver + recursionLimit + 工具异常处理器）；对外只暴露 `chat(chatId,msg)`、`stream(chatId,msg)`、`isMcpAvailable()`、`toolNames()`；内部把 `chatId` 映射为 `threadId` | 不碰 HTTP、不做参数校验、不读写 `FileBasedChatMemory` | S3 |
-| `agent/AgentProperties` | `@ConfigurationProperties("love-app.agent")` | 绑定窗口、长度上限、MCP 端点/超时/凭据、记忆目录/类型、stdio 参数 | 不发请求 | S3 |
+| `agent/LoveAgent` | `@Component` | 启动期装配唯一 `ReactAgent`（model + `systemPrompt` + tools + hooks + saver + recursionLimit + 工具异常处理器）；对外只暴露 `chat(chatId,msg)`、`stream(chatId,msg)`、`isMcpAvailable()`、`toolNames()`；内部把 `chatId` 映射为 `threadId` | 不碰 HTTP、不做参数校验、不读写 `FileBasedChatMemory` | S3 || `agent/AgentProperties` | `@ConfigurationProperties("love-app.agent")` | 绑定窗口、长度上限、MCP 端点/超时/凭据、记忆目录/类型、stdio 参数 | 不发请求 | S3 |
 | `agent/PromptLoader` | `@Component` | 从 `classpath:prompts/love-agent-system.txt` 读 UTF-8 文本；缺失/空白 → 启动失败 | 不做模板渲染 | S3 |
 | `agent/HistoryWindowHook` | `MessagesModelHook` 子类 | `beforeModel` 裁剪到最近 `history-window` 条，保持消息配对，返回 `AgentCommand(list, REPLACE)` | 不做摘要、不调模型 | S3 |
 | `agent/AgentOutputMapper` | 普通类（纯函数） | `NodeOutput` → 增量文本/兜底全文：只认 `AGENT_MODEL_STREAMING` 的 `chunk()`；`AGENT_MODEL_FINISHED` 的 `message().getText()` 作兜底 | 不持有状态 | S3 |
@@ -192,7 +191,8 @@
 | `service/LoveAgentChatService` | `@Service` | `chatId` 规范化与生成、调 agent、组响应、SSE 分片与终止事件、异常翻译 | 不拼 prompt、不直接调工具、不碰 graph 类型 | S4 |
 | `controller/LoveAgentController` | `@RestController` | 两端点、Bean Validation、`SseEmitter` 生命周期、OpenAPI 注解 | 不含业务逻辑 | S4 |
 | `model/*` | `record` | 请求/响应/SSE 事件/错误体 | — | S4 |
-| `exception/*` | 类 | `LoveAgentException` + `AgentErrorCode` + `@RestControllerAdvice` | 不改其它路径错误结构 | S4 |
+| `exception/LoveAgentException` + `exception/AgentErrorCode` | 类 | `LoveAgent` 的业务异常与错误码（`INVALID_REQUEST`/`AGENT_UNAVAILABLE`/`AGENT_ERROR`/`AGENT_LOOP_LIMIT`/`INTERNAL_ERROR`），unchecked | 不含 HTTP 语义 | S3（编排调整：`LoveAgent` 需要它，避免与 S4 循环依赖） |
+| `exception/GlobalExceptionHandler` | `@RestControllerAdvice` | 异常 → HTTP 状态与错误体（§7.3） | 不改其它路径错误结构 | S4 |
 | 提示词资产 | 资源 | `prompts/love-agent-system.txt` 是唯一 system prompt 源 | 不在 Java 里硬编码 prompt | S2 |
 
 ### 4.3 与外部世界的四个契约
@@ -379,16 +379,17 @@ Controller → Client: 200 application/json
 Client → Controller: POST .../chat/stream {chatId?, message}
 Controller: 同步校验（失败直接 400 JSON，不建流）
 Controller: SseEmitter emitter = new SseEmitter(60_000L)；异步线程执行
-Service → LoveAgent.stream(chatId, message) → Flux<NodeOutput>
+Service → LoveAgent.stream(chatId, message) → Flux<String>（增量文本，已由 LoveAgent 内部用 AgentOutputMapper 完成过滤与兜底）
   订阅：
-    AgentOutputMapper：若 outputType==AGENT_MODEL_STREAMING 且 chunk 非空
-        → fullText += chunk；send event:message {"chatId","delta"}
-    若 AGENT_MODEL_FINISHED 且此前一个 chunk 都没发出 → 用 message().getText() 补发一次
+    每个 delta 非空 → fullText += delta；send event:message {"chatId","delta"}
+    （AGENT_MODEL_STREAMING 的过滤、AGENT_MODEL_FINISHED 的零 chunk 兜底、AGENT_TOOL_* 的忽略，全部在 LoveAgent 内部完成）
     完成 → send event:done {"chatId","elapsedMs"} → emitter.complete()
     异常 → send event:error {"chatId","code","message"} → emitter.complete()
     客户端断开（IOException）→ 取消订阅（checkpoint 已由 framework 写入）
 emitter.onTimeout/onError → complete
 ```
+
+> 编排调整（主 agent 决定）：`LoveAgent.stream` 返回 **`Flux<String>`** 而非 `Flux<NodeOutput>`，以满足 §10.2「service 不得出现 graph 类型」。S4 只负责把字符串包成 SSE 帧，不做输出类型判定。
 
 SSE 帧：
 
@@ -740,15 +741,17 @@ mvn -o test -Dtest='LoveAgent*Test'
 | --- | --- | --- | --- | --- |
 | 1（并行） | **S1 工程基线** | `pom.xml`、`.mvn/settings.xml`(新)、`.mvn/maven.config`(新)、`README.md`(新)、`src/test/**`（**仅**加 `@Tag`/surefire 配置，不改测试逻辑） | 阿里云镜像可用；`spring-ai-mcp` + `mcp:0.17.0` 钉版 + validation 依赖；surefire 分组；README 写清构建/运行/密钥/stdio 备选 | 在线拉依赖一次 → `mvn -o -DskipTests compile`=0；`mvn -o test` 全绿且无 live；`dependency:tree` 只有 mcp 0.17.0、无 Boot 3.5.x |
 | 1（并行） | **S2 知识库与提示词资产** | `src/main/resources/prompts/**`(新)、`src/main/resources/document/**`（本轮仅错别字，默认不动） | `prompts/love-agent-system.txt` 满足 §5.4 全部 9 条，且不含具体工具名 | 文件存在、UTF-8、9 条覆盖（T11 在 S3 落地后校验）；不改 `document/**` 则无需重跑 ETL |
-| 2 | **S3 工具层与 Agent 内核** | `src/main/java/.../tool/**`、`agent/**`、`chatmemory/**`、`rag/**`、`app/LoveApp.java`；新增 `src/test/java/.../tool/**`、`agent/**`、`chatmemory/**`、`app/LoveAppRagSingleRetrievalTest`、`app/LoveAgentLiveTest` | T1–T20、T28 全绿（T29 属 live，随 S3 一并提交但不进默认门槛）；「2 本地 + 0 MCP」下工具循环可跑通；saver 记忆跨实例可恢复；`LoveApp` 注入与双检索修复 | `mvn -o -DskipTests compile`=0；`mvn -o test` 全绿；`git commit` |
-| 3 | **S4 接口层** | `src/main/java/.../controller/**`、`model/**`、`service/**`、`exception/**`；新增 `src/test/java/.../controller/**`、`service/**`、`exception/**` | 同步 + SSE 端点、`chatId` 会话、统一异常；T21–T27 全绿 | 同上 + `mvn -o test -Dtest='*ControllerTest'` 全绿；`git commit` |
+| 2 | **S3 工具层与 Agent 内核** | `src/main/java/.../tool/**`、`agent/**`、`chatmemory/**`、`rag/**`、`app/LoveApp.java`、`exception/LoveAgentException.java`、`exception/AgentErrorCode.java`；新增 `src/test/java/.../tool/**`、`agent/**`、`chatmemory/**`、`app/LoveAppRagSingleRetrievalTest`、`app/LoveAgentLiveTest` | T1–T20、T28 全绿（T29 属 live，随 S3 一并提交但不进默认门槛）；「2 本地 + 0 MCP」下工具循环可跑通；saver 记忆跨实例可恢复；`LoveApp` 注入与双检索修复 | `mvn -o -DskipTests compile`=0；`mvn -o test` 全绿；`git commit` |
+| 3 | **S4 接口层** | `src/main/java/.../controller/**`、`model/**`、`service/**`、`exception/GlobalExceptionHandler.java`；新增 `src/test/java/.../controller/**`、`service/**`、`exception/**` | 同步 + SSE 端点、`chatId` 会话、统一异常；T21–T27 全绿 | 同上 + `mvn -o test -Dtest='*ControllerTest'` 全绿；`git commit` |
 | 4 | **Reviewer（独立子 agent）** | 只读；产出审查报告（不提交代码） | 按 `code-review` 口径双轴报告：**标准轴**（命名、分层、日志、测试分层、无死代码）+ **规格轴**（逐条对照 D1–D17、AC1–AC9、§7 降级矩阵） | 报告为「无阻断项」或列出阻断项退回 owner |
 
 ### 10.2 所有权边界（防冲突）
 
 1. `pom.xml`、`.mvn/**`、`README.md` **只有 S1 能改**；S3/S4 需要新依赖时向 S1 提需求。
 2. 既有测试文件的 `@Tag` 只有 S1 加；S3/S4 只新增自己包下的测试。
-3. `agent/`、`tool/`、`chatmemory/`、`rag/` 只有 S3 写；`service/` 只调 `LoveAgent` 公开方法，**不得出现** `ReactAgent`/`ToolCallback`/`NodeOutput`/`RunnableConfig` 类型。
+3. `agent/`、`tool/`、`chatmemory/`、`rag/` 只有 S3 写；`service/` 只调 `LoveAgent` 公开方法，**不得出现** `ReactAgent`/`ToolCallback`/`NodeOutput`/`RunnableConfig` 类型。`exception/` 按类拆分所有权：`LoveAgentException` + `AgentErrorCode` 归 S3（`LoveAgent` 依赖它们），`GlobalExceptionHandler` 归 S4。
+   - 对外签名（S4 照此编码，不得更改）：`String chat(String chatId, String message)`、`Flux<String> stream(String chatId, String message)`、`boolean isMcpAvailable()`、`List<String> toolNames()`。
+   - 异常语义：`TransientAiException`/`NonTransientAiException` 原样上抛；`GraphRunnerException` 在 `LoveAgent` 内包成 `LoveAgentException`（循环耗尽 → `AGENT_LOOP_LIMIT`，其它 → `AGENT_ERROR`）；未预期异常 → `LoveAgentException(INTERNAL_ERROR)`。
 4. prompt 文件只有 S2 写；S3 只读。
 5. 波次 1 的 S1/S2 零路径重叠，可完全并行；波次 2 依赖 S1 的依赖与 S2 的 prompt；波次 3 依赖 S3 的公开签名（§4.2/§6.2 已定死）；波次 4 依赖前三者提交完成。
 
