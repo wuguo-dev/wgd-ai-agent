@@ -10,7 +10,7 @@ Spring Boot 3.4.4 + Spring AI 1.1.2 + Spring AI Alibaba 的演示工程：把 Da
 | 运行时 | Java 21、Spring Boot 3.4.4 |
 | 模型 | DashScope（`spring-ai-alibaba-starter-dashscope`，默认 `qwen-plus` / `text-embedding-v2`） |
 | Agent | `spring-ai-alibaba-agent-framework`（`ReactAgent`、检查点/记忆、工具回调） |
-| MCP | `spring-ai-mcp` + `io.modelcontextprotocol.sdk:mcp:0.17.0`（手工装配，不用 MCP starter） |
+| MCP | `spring-ai-mcp` + `io.modelcontextprotocol.sdk:mcp:0.17.0`（手工装配，不用 MCP starter；传输默认 Streamable HTTP） |
 | 知识库 | Spring AI PgVector（PostgreSQL + pgvector，1536 维） |
 | 接口文档 | springdoc-openapi 2.8.9 自带 Swagger UI（原 Knife4j 4.5.0 因与 Spring Framework 6.2 不兼容已移除，见下） |
 | 构建 | Maven 3.9（依赖走阿里云公共仓库镜像） |
@@ -86,8 +86,9 @@ mvn -o validate -X 2>&1 | Select-String "Reading user settings"   # 应指向 <�
 | --- | --- | --- |
 | `AMAP_MCP_KEY` | 生产必须 | 高德 MCP 凭据；未设置时不建连接、接口照常返回（降级路径） |
 | `AMAP_MCP_ENABLED` | 否 | 设为 `false` 可禁用高德 MCP（灰度 / 排障） |
-| `AMAP_MCP_PROTOCOL` | 否 | 传输方式，默认 `sse`；切 `stdio` 走 npx 本地进程 |
-| `AMAP_MCP_BASE_URL` / `AMAP_MCP_SSE_PATH` | 否 | 指向代理或自建端点 |
+| `AMAP_MCP_PROTOCOL` | 否 | 传输协议，默认 `streamable-http`；可选 `sse`（`/sse`）、`stdio`（npx 本地进程） |
+| `AMAP_MCP_STREAMABLE_PATH` | 否 | Streamable HTTP 端点路径，默认 `/mcp`（完整地址 = `base-url` + 该路径 + `?key=...`） |
+| `AMAP_MCP_BASE_URL` / `AMAP_MCP_SSE_PATH` | 否 | 指向代理或自建端点（`base-url` 只到 host；SSE 回退路径默认 `/sse`） |
 | `LOVE_AGENT_MEMORY_TYPE` | 否 | Agent 记忆/检查点实现（如 `file`） |
 | `LOVE_AGENT_MEMORY_DIR` | 否 | 检查点目录（默认 `chat-memory/`，已被 `.gitignore` 排除） |
 | `PGVECTOR_JDBC_URL` / `PGVECTOR_USERNAME` / `PGVECTOR_PASSWORD` | 本地已有 | 知识库连接（既有配置） |
@@ -97,7 +98,8 @@ mvn -o validate -X 2>&1 | Select-String "Reading user settings"   # 应指向 <�
 | `LOVE_APP_RATE_LIMIT_PER_MINUTE` / `LOVE_APP_RATE_LIMIT_BURST` | 否 | 令牌桶限流（默认 30/30）；超限 429 + `Retry-After`；未启用鉴权时按客户端 IP 计数 |
 | `LOVE_AGENT_LOG_REASONING` | 否 | 设 `true` 才打印框架推理日志（含 system prompt / 工具入参 / 答复全文），默认关闭 |
 
-> MCP 工具白名单：高德托管端点实测暴露 15 个工具，默认屏蔽 3 个 `maps_schema_*` 元工具（暴露 12 个），
+> MCP 工具白名单：高德托管端点实测暴露 15 个工具（Streamable HTTP 的 `/mcp` 与回退 SSE 的 `/sse` 两种端点实测均为 15 个），
+> 默认屏蔽 3 个 `maps_schema_*` 元工具（暴露 12 个），
 > 见 `love-app.agent.mcp.exclude-tools`（默认 `["maps_schema_*"]`）。匹配规则：`*` 结尾做前缀匹配，否则全名精确匹配；
 > 该配置是**整体覆盖**，自定义时记得带上 `maps_schema_*`，否则元工具会重新暴露。
 
@@ -107,6 +109,29 @@ PowerShell 设置示例（只对当前进程生效）：
 $env:AMAP_MCP_KEY = '<your-key>'
 mvn -Plive test
 ```
+
+## MCP 传输协议
+
+高德 MCP 三种传输都支持，**切换只改环境变量，不用改代码**：
+
+| 协议 | 端点 | 何时用 |
+| --- | --- | --- |
+| `streamable-http`（默认） | `https://mcp.amap.com/mcp?key=<key>` | 日常运行。高德官方推荐，实测 `initialize` 200、`protocolVersion=2025-03-26` |
+| `sse` | `https://mcp.amap.com/sse?key=<key>` | 调试或与 Streamable HTTP 做对比时（老端点，仍由官方托管） |
+| `stdio` | 本地进程 `cmd /c npx -y @amap/amap-maps-mcp-server` | 无外网、想完全本地跑、或云端端点异常时（需要 Node/npx） |
+
+```powershell
+$env:AMAP_MCP_PROTOCOL = 'sse'      # 显式切回 SSE
+$env:AMAP_MCP_PROTOCOL = 'stdio'    # 切到本地 npx 进程
+$env:AMAP_MCP_PROTOCOL = 'streamable-http'   # 显式指定默认协议
+```
+
+三个协议之间**不做自动探测/回退**：选哪个由 `AMAP_MCP_PROTOCOL` 决定，选错或连不上就降级为「仅本地工具」——
+启动日志 1 条 WARN，接口照常 200（AC5）。端点路径可用 `AMAP_MCP_STREAMABLE_PATH`（默认 `/mcp`）与
+`AMAP_MCP_SSE_PATH`（默认 `/sse`）覆盖。
+
+> **两个实测注意点**：① `/mcp` 端点 `initialize` 自报的 `serverInfo.name` 仍是 `amap-sse-server`，这是服务端命名，不代表协议回退；
+> ② **两种传输端点实测均为 15 个工具、默认排除同样的 3 个 `maps_schema_*`**（数量与排除项一致，未逐名 diff），以启动日志 `高德 MCP 工具：原始 N 个，暴露 M 个` 为最终依据。
 
 ## 密钥规则（硬性要求）
 
@@ -129,10 +154,11 @@ mvn -Plive test
 
 ```powershell
 git grep -n "AMAP_MCP_KEY="
+git grep -n "mcp.amap.com/mcp?key="
 git grep -n "mcp.amap.com/sse?key="
 ```
 
-两条命令的结果里都不允许出现真实 key。
+三条命令的结果里都不允许出现真实 key。
 
 ## 测试分层
 

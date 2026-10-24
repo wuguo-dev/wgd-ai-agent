@@ -30,7 +30,7 @@
 构建**最小闭环**，四个能力缺一不可：
 
 1. **工具循环**：模型能自主决定「查知识库 / 查现在几点 / 查地点天气路线」，一轮内多步调用，直到给出最终答复。
-2. **外部工具接入**：以 MCP Client 身份接入高德地图 MCP（官方托管 SSE 端点为主，npm stdio 为备），「搜索」能力由高德 POI/周边搜索承担。
+2. **外部工具接入**：以 MCP Client 身份接入高德地图 MCP（**默认 Streamable HTTP**；官方 SSE 端点与 npm stdio 保留为可配置回退），「搜索」能力由高德 POI/周边搜索承担。
 3. **可服务化**：同步接口 + 真流式 SSE 接口，带 `chatId` 会话管理（跨进程重启不丢）。
 4. **不炸**：外部 MCP 不可用、单个工具异常、知识库不可用时，接口仍返回可用答复（不返回 5xx），只打 WARN。
 
@@ -56,7 +56,7 @@
 | --- | --- | --- |
 | D1 | 定位：把恋爱大师从「知识问答」升级为「会调工具的智能体」，本轮只做**最小闭环**，不堆功能 | §1.2、§11 |
 | D2 | MCP 角色：**只做 MCP Client**，不实现 MCP Server | §4、§11 |
-| D3 | 工具来源：**高德地图 MCP**。官方托管 SSE `https://mcp.amap.com/sse?key=${AMAP_MCP_KEY}` 为主，npm 包 `@amap/amap-maps-mcp-server` 走 stdio 为备；「搜索」由高德 POI/周边搜索承担，不接网页搜索 | §5.2、§8.2 |
+| D3 | 工具来源：**高德地图 MCP**。官方端点默认走 Streamable HTTP `https://mcp.amap.com/mcp?key=${AMAP_MCP_KEY}`（D22）；`https://mcp.amap.com/sse?key=${AMAP_MCP_KEY}` 与 npm 包 `@amap/amap-maps-mcp-server`（stdio）保留为可配置回退；「搜索」由高德 POI/周边搜索承担，不接网页搜索 | §5.2、§8.2、D22 |
 | D4 | 运行时：**ReactAgent**（spring-ai-alibaba-agent-framework），不用 ChatClient 裸循环 | §4.2、§6.2 |
 | D5 | 本地工具（`@Tool`）：`currentTime`（当前时间/时区，免网络）、`loveKbSearch`（把现有 pgvector 知识库包装成工具，由 agent 自主决定何时检索，**取代「每轮强制检索」**） | §5.1、§6.5 |
 | D6 | 接口层：`POST /api/ai/love/agent/chat`（同步）、`POST /api/ai/love/agent/chat/stream`（SSE），带 `chatId` 会话管理 | §6.2、§6.3、§7.3 |
@@ -99,6 +99,7 @@
 | `registry.npmjs.org` | 200；`@amap/amap-maps-mcp-server` 最新 `0.0.8` | stdio 备选可用；Node/npx 在位 |
 | `duckduckgo.com`、`www.google.com` | 不可达 | 免 key 网页搜索 MCP 不可用，这是选高德的原因 |
 | `https://mcp.amap.com/sse?key=invalid-test-key` | HTTP 200 + `Content-Type: application/json` + `{"status":"0","info":"INVALID_USER_KEY","infocode":"10001"}`，响应头 `Connection: close` | **失败不是连接错误，而是「200 + 非 SSE 响应」**。降级必须捕获 `initialize()`/`listTools()` 异常与超时，不能只看 TCP 连通 |
+| `https://mcp.amap.com/mcp?key=<Web 服务 Key>`（Streamable HTTP，默认传输） | `initialize` 返回 **200**，协商结果 `protocolVersion=2025-03-26`，`serverInfo.name=amap-sse-server`，支持 `tools` 能力 | 默认传输据此切换（D22）。注意服务端自报名字仍是 `amap-sse-server`，且**工具清单是否与 `/sse` 完全一致尚未逐项比对**（见 R20）；实现用 `openConnectionOnStartup(false)` 保持「连不上也能启动」 |
 
 ### 3.3 依赖现状与版本冲突（关键）
 
@@ -107,7 +108,7 @@
 - 版本仲裁方向：`spring-ai-mcp:1.1.2` 的 POM 声明 `io.modelcontextprotocol.sdk:mcp:0.17.0`（本项目里是 depth 3）；`spring-ai-alibaba-agent-framework:1.1.2.0` 的 POM 声明 `mcp:0.14.0`（depth 2）→ **nearest-wins 会选 0.14.0**，而 `spring-ai-bom` 不管理该 SDK。**必须在 `dependencyManagement` 钉 `io.modelcontextprotocol.sdk:mcp:0.17.0`**，否则 `SyncMcpToolCallback` 运行期 `NoSuchMethodError`。
 - `spring-ai-mcp` 只需一个直接依赖：`mcp:0.17.0` 是聚合包（空 jar），会带入 `mcp-core` 与 `mcp-json-jackson2`。
 - `spring-ai-starter-mcp-client:1.1.2` 的 POM 声明 `spring-boot-starter:3.5.8`；本项目父 POM 是 3.4.4，混用需依赖 `dependencyManagement` 降级。**本轮不引入 starter（D9），从根上回避该错配**。
-- 传输类在 `mcp-core`：`HttpClientSseClientTransport`、`StdioClientTransport`；`io.modelcontextprotocol.util.Utils.resolveUri` 用 `URI.resolve` 拼接 → **base 只到 host，端点写 `/sse?key=...`**（query 放 base 会被丢弃）。
+- 传输类在 `mcp-core`：`HttpClientStreamableHttpTransport`（Streamable HTTP，默认）、`HttpClientSseClientTransport`（SSE 回退）、`StdioClientTransport`（本地进程）；`io.modelcontextprotocol.util.Utils.resolveUri` 用 `URI.resolve` 拼接 → **base 只到 host，端点写 `/mcp?key=...` 或 `/sse?key=...`**（query 放 base 会被丢弃）。
 - Spring AI 1.1.2 的 `McpSseClientProperties.SseParameters` 只有 `url`、`sseEndpoint` 两个字段，**1.1.2 没有 per-connection headers 配置**，所以高德鉴权只能走 query 字符串。
 
 ### 3.4 Agent 运行时事实（反编译核实）
@@ -185,7 +186,7 @@
 | `tool/LoveLocalTools` | `@Component` | `currentTime`、`loveKbSearch` 两个 `@Tool` 方法 | 不持有会话状态 | S3 |
 | `tool/LoggingToolCallback` | 普通类 | 装饰任意 `ToolCallback`：INFO 打印 `tool=<name>`、耗时、结果长度；结果与异常原样透传 | 不打入参/正文（隐私） | S3 |
 | `tool/LoveToolExceptionProcessor` | `ToolExecutionExceptionProcessor` | 工具异常 → 中文可读文本回喂模型，WARN 一次，隐藏堆栈与 SQL | 不吞 LLM 异常 | S3 |
-| `tool/McpTransportFactory` | 普通类 | 按协议造 `McpClientTransport`：sse（host + `/sse?key=`，URL 编码）/ stdio（Windows `cmd /c npx ...`） | 不负责连接/重试 | S3 |
+| `tool/McpTransportFactory` | 普通类 | 按 `mcp.protocol` 造 `McpClientTransport`：**streamable-http（默认，host + `/mcp?key=`，URL 编码，`openConnectionOnStartup(false)`）** / sse（host + `/sse?key=`）/ stdio（Windows `cmd /c npx ...`） | 不负责连接/重试/协议自动探测 | S3 |
 | `tool/AmapMcpToolProvider` | `@Component` | 自管 `McpSyncClient`：连 → `initialize()` → `listTools()` → `SyncMcpToolCallback`；任何失败只 WARN 并返回空工具集；INFO 打印实际工具名清单 | 不做热重连、不缓存 POI 结果 | S3 |
 | `tool/McpToolset` | `record` | `(List<ToolCallback> callbacks, boolean available, String status)` | — | S3 |
 | `chatmemory/FileBasedChatMemory` | 类（修） | 仅为 `LoveApp` 旧 ChatClient 路径服务：Kryo 实例非共享、每会话读改写加锁、原子写、会话 ID 白名单 | 不再承担 agent 记忆 | S3 |
@@ -227,6 +228,8 @@
 
 因此本方案：`AmapMcpToolProvider` 自己 `new` 客户端、自己 `initialize()`、自己 `listTools()`，全部包在 try/catch 里，再把 `List<ToolCallback>` 交给 `LoveAgent`。代价是要自己钉 MCP SDK 版本（§8.2），收益是「连不上也能启动」这件事由代码保证，而不是靠配置碰运气。
 
+传输层与这条结论直接相关：`McpTransportFactory` 按 `love-app.agent.mcp.protocol` 选传输，**默认 Streamable HTTP**（`/mcp?key=`）；Streamable HTTP 构建时显式 `openConnectionOnStartup(false)`，所以「造传输」本身不建连，真正的连接由 `AmapMcpToolProvider` 在 try/catch 内主动 `initialize()` 触发。SSE / stdio 两条回退路径同样由该 try/catch 兜住，因此「连不上也能启动」在三种协议下都成立（D22、§8.1）。
+
 ---
 
 ## 5. 工具契约清单
@@ -263,10 +266,12 @@
 
 ### 5.2 MCP 工具（高德）
 
-来源：**以运行时 `listTools()` 为准（已用真实 key 实测，2026-10-24）**。托管端点 `https://mcp.amap.com/sse` 实际暴露 **15 个**工具，与 `@amap/amap-maps-mcp-server@0.0.8` 的 12 个**不完全一致**（V3 已闭环）：
+来源：**以运行时 `listTools()` 为准（已用真实 key 实测，2026-10-24）**。下表是**两种传输端点**（默认 Streamable HTTP `https://mcp.amap.com/mcp` 与回退 SSE `https://mcp.amap.com/sse`）实测的：两种端点都是 **15 个**工具、默认排除项也一致（R20 已闭环），与 `@amap/amap-maps-mcp-server@0.0.8` 的 12 个**不完全一致**（V3 已闭环），差异如下：
 
 - 命名差异：npm 包的 `maps_bicycling` 在托管端点是 **`maps_direction_bicycling`**；
 - 多出 3 个 `maps_schema_*` 工具：`maps_schema_personal_map`、`maps_schema_navi`、`maps_schema_take_taxi`（返回对应能力的入参 schema）。
+
+> 默认传输已切到 Streamable HTTP（D22）。**两种传输端点实测均为 15 个、默认排除同样的 3 个 `maps_schema_*`（数量与排除项一致，逐名 diff 未做，见 R20）**；一律以启动日志 `高德 MCP 工具：原始 N 个，暴露 M 个` 与随后的工具名清单为唯一事实来源。
 
 入参均为 `string`（高德 MCP 的 schema 未用数字类型）。
 
@@ -288,7 +293,12 @@
 | 14 | `maps_schema_take_taxi` | 打车能力入参 schema | — | — |
 | 15 | `maps_schema_personal_map` | 个人地图能力入参 schema | — | — |
 
-实测证据（2026-10-24，真实 key）：启动日志 `agent 就绪：本地工具=2，MCP 工具=15`；完整清单 17 项 = 2 本地 + 上述 15 个；关键词「北京朝阳区适合约会的咖啡馆」触发 `maps_text_search` 两次（504ms / 460ms），答出真实 POI 名。
+实测证据（2026-10-24，真实 key，**两种传输端点**）：
+
+- **工具数量跨传输一致**：默认 Streamable HTTP（`/mcp`）日志 `高德 MCP 工具：原始 15 个，暴露 12 个，排除 3 个 [maps_schema_personal_map, maps_schema_navi, maps_schema_take_taxi]`；回退 `AMAP_MCP_PROTOCOL=sse` 同样 15 个、同样排除这 3 个（逐名 diff 未做）。
+- 启动就绪（SSE 端点）：`agent 就绪：本地工具=2，MCP 工具=15`；完整清单 17 项 = 2 本地 + 上述 15 个。
+- 真实工具调用（Streamable HTTP）：`tool=maps_geo elapsedMs=198` → `tool=maps_around_search elapsedMs=286`，答出真实 POI 名。
+- 关键词触发（SSE 端点）：「北京朝阳区适合约会的咖啡馆」触发 `maps_text_search` 两次（504ms / 460ms）。
 
 坐标格式统一「经度,纬度」（如 `116.481488,39.990464`），prompt 必须写明，避免模型传成「纬度,经度」。
 
@@ -358,7 +368,7 @@ prompt 加载失败（文件缺失/为空）→ 启动期抛 `IllegalStateExcept
 2. `AgentProperties` 绑定配置；`FileSystemSaver` 初始化（目录不存在则创建）；失败 → WARN + `MemorySaver` 降级。
 3. `AmapMcpToolProvider`：
    - `mcp.enabled=false` 或 `key` 为空 → WARN `高德 MCP 未启用（原因：...），仅本地工具可用`，不建连接，`available=false`，返回空列表；
-   - 否则 `McpTransportFactory` 造 sse 传输（`connectTimeout=3s`），`McpClient.sync(transport).requestTimeout(20s).build()` → `initialize()` → `listTools()`；
+   - 否则 `McpTransportFactory` 按 `mcp.protocol` 造传输（`connectTimeout=3s`）：**默认 streamable-http → `base + /mcp?key=`，`openConnectionOnStartup(false)`**；`sse` → `base + /sse?key=`；`stdio` → `cmd /c npx -y @amap/amap-maps-mcp-server`。然后 `McpClient.sync(transport).requestTimeout(20s).build()` → `initialize()` → `listTools()`；
    - 成功 → 包装成 `SyncMcpToolCallback`，INFO 打印工具名清单与数量，`available=true`；
    - 任一步异常/超时 → WARN `高德 MCP 不可用（<异常简单类名>），仅本地工具可用`，`close()`，返回空列表。**绝不上抛**。
 4. `LoveAgent` 用「本地 2 + MCP N」装配 `ReactAgent`；N=0 时照常构建。
@@ -522,10 +532,11 @@ data: {"chatId":"abc123","elapsedMs":4210}
 | `memory.type` | enum | `file` | `LOVE_AGENT_MEMORY_TYPE` | `file`=FileSystemSaver，`memory`=MemorySaver |
 | `memory.dir` | String | `chat-memory/agent` | `LOVE_AGENT_MEMORY_DIR` | 相对 `user.dir` |
 | `mcp.enabled` | boolean | `true` | `AMAP_MCP_ENABLED` | `false` 时完全不建 MCP 连接 |
-| `mcp.protocol` | enum | `sse` | `AMAP_MCP_PROTOCOL` | `sse` / `stdio` |
+| `mcp.protocol` | enum | `streamable-http` | `AMAP_MCP_PROTOCOL` | `streamable-http`（默认）/ `sse` / `stdio` |
 | `mcp.key` | String | 空 | `AMAP_MCP_KEY` | **唯一**凭据来源，不得有默认明文 |
 | `mcp.base-url` | String | `https://mcp.amap.com` | `AMAP_MCP_BASE_URL` | 只到 host（不含 path/query） |
-| `mcp.sse-path` | String | `/sse` | `AMAP_MCP_SSE_PATH` | 代码拼 `?key=`，故默认值不带 query |
+| `mcp.streamable-path` | String | `/mcp` | `AMAP_MCP_STREAMABLE_PATH` | 默认协议的端点路径；代码拼 `?key=`，故默认值不带 query |
+| `mcp.sse-path` | String | `/sse` | `AMAP_MCP_SSE_PATH` | SSE 回退的端点路径；代码拼 `?key=`，故默认值不带 query |
 | `mcp.connect-timeout` | Duration | `3s` | — | HttpClient 连接超时 |
 | `mcp.request-timeout` | Duration | `20s` | — | MCP 请求超时 |
 | `mcp.stdio.command` | String | `cmd` | — | Windows 直接执行 `npx`(.cmd) 会失败，故用 `cmd` |
@@ -545,9 +556,10 @@ love-app:
       dir: ${LOVE_AGENT_MEMORY_DIR:chat-memory/agent}
     mcp:
       enabled: ${AMAP_MCP_ENABLED:true}
-      protocol: ${AMAP_MCP_PROTOCOL:sse}
+      protocol: ${AMAP_MCP_PROTOCOL:streamable-http}
       key: ${AMAP_MCP_KEY:}
       base-url: ${AMAP_MCP_BASE_URL:https://mcp.amap.com}
+      streamable-path: ${AMAP_MCP_STREAMABLE_PATH:/mcp}
       sse-path: ${AMAP_MCP_SSE_PATH:/sse}
       connect-timeout: 3s
       request-timeout: 20s
@@ -561,7 +573,9 @@ love-app:
 
 - YAML 里只有环境变量名，没有 key 值；`key:` 默认空串是刻意设计（无 key 即降级，不报错）。
 - 不得把 key 写进 `application-local.yml`；单一来源 = 进程环境。
-- SSE 的 query 由代码拼接并 URL 编码：`ssePath + "?key=" + encode(key)`。原因：`Utils.resolveUri` 走 `URI.resolve`，base 带 query 会被丢弃；且 Spring AI 1.1.2 的 `SseParameters` 只有 `url`/`sseEndpoint` 两字段，没有 header 配置，鉴权只能走 query。
+- **默认传输是 Streamable HTTP**（D22）：`HttpClientStreamableHttpTransport.builder(baseUrl).endpoint("/mcp?key=...").openConnectionOnStartup(false)`。`openConnectionOnStartup(false)` 是硬要求——构建传输时不建连，连不上不会拖垮启动（D7）；真正的连接由 `AmapMcpToolProvider` 在 try/catch 内主动 `initialize()` 触发。
+- 两种 HTTP 传输的 query 都由代码拼接并 URL 编码：`streamablePath + "?key=" + encode(key)` / `ssePath + "?key=" + encode(key)`。原因：`Utils.resolveUri` 走 `URI.resolve`，base 带 query 会被丢弃；且 Spring AI 1.1.2 的 `SseParameters` 只有 `url`/`sseEndpoint` 两字段，没有 header 配置，鉴权只能走 query。
+- 切回 SSE 或 stdio 只改环境变量（`AMAP_MCP_PROTOCOL=sse` / `stdio`），不改代码；**不做协议间自动探测/回退**（§13.5）。
 - 若将来改用 starter 自动配置（本规格不用），等价写法是 `spring.ai.mcp.client.sse.connections.amap.url=https://mcp.amap.com` + `sse-endpoint: "/sse?key=${AMAP_MCP_KEY}"`，并可用 `spring.ai.mcp.client.initialized=false` 走懒连接——但如上所述仍会在 `build()` 时联网，**不能**作为降级手段。
 
 ### 8.3 Maven 镜像配置（S1 新增两文件 + pom 兜底）
@@ -649,7 +663,7 @@ love-app:
 2. 日志、异常 message、HTTP 响应体都不得包含 key 或其片段（含 URL query）。
 3. 无 key 时：不建连接、不报错、接口照常 200（AC5）。
 4. CI 一律不设 key；所有离线测试不依赖 key（MCP 相关测试全部用 stub）。
-5. 交付前检查：`git grep -n "AMAP_MCP_KEY="`、`git grep -n "mcp.amap.com/sse?key="` 两条命令的结果中不得出现真实 key。
+5. 交付前检查：`git grep -n "AMAP_MCP_KEY="`、`git grep -n "mcp.amap.com/mcp?key="`、`git grep -n "mcp.amap.com/sse?key="` 三条命令的结果中不得出现真实 key。
 
 ### 8.5 环境变量清单
 
@@ -657,8 +671,8 @@ love-app:
 | --- | --- | --- |
 | `AMAP_MCP_KEY` | 生产必须 | 高德 MCP 凭据 |
 | `AMAP_MCP_ENABLED` | 否 | `false` 禁用 MCP（灰度/排障） |
-| `AMAP_MCP_PROTOCOL` | 否 | 切 `stdio` 备选 |
-| `AMAP_MCP_BASE_URL` / `AMAP_MCP_SSE_PATH` | 否 | 指向代理/自建端点 |
+| `AMAP_MCP_PROTOCOL` | 否 | 传输协议，默认 `streamable-http`；可选 `sse` / `stdio` |
+| `AMAP_MCP_BASE_URL` / `AMAP_MCP_STREAMABLE_PATH` / `AMAP_MCP_SSE_PATH` | 否 | 指向代理/自建端点（路径默认 `/mcp` 与 `/sse`） |
 | `LOVE_AGENT_MEMORY_TYPE` / `LOVE_AGENT_MEMORY_DIR` | 否 | 记忆实现与目录 |
 | `PGVECTOR_JDBC_URL` / `PGVECTOR_USERNAME` / `PGVECTOR_PASSWORD` | 本地已有 | 知识库连接（既有） |
 | `LOVE_APP_ETL_ENABLED` | 否 | 仅导入知识库时置 `true`（既有） |
@@ -706,7 +720,7 @@ mvn -o test -Dtest='LoveAgent*Test'
 | T3 | `tool/LoveLocalToolsTest` | L1 | `VectorStore` 为空 → 「不可用」文本；`similaritySearch` 抛异常 → 「检索失败」文本且不抛 | D7 |
 | T4 | `tool/AmapMcpToolProviderTest` | L1 | key 空 / `enabled=false` → `available=false`、callbacks 空、无异常、不建连接 | D7/D8 |
 | T5 | `tool/AmapMcpToolProviderTest` | L1 | 覆写创建客户端的方法返回「`initialize()` 必抛」的 stub → 捕获、`available=false`、空列表、`close()` 被调用 | D7/D9 |
-| T6 | `tool/McpTransportFactoryTest` | L1 | sse：host=`https://mcp.amap.com`、path=`/sse`、key=`a b` → `/sse?key=a+b`；stdio：`cmd` + `["/c","npx","-y","@amap/amap-maps-mcp-server"]` + env 名 `AMAP_MAPS_API_KEY` | D3 |
+| T6 | `tool/McpTransportFactoryTest` | L1 | **streamable-http（默认）**：base=`https://mcp.amap.com`、`streamable-path=/mcp`、key=`a b` → `/mcp?key=a+b`；sse：path=`/sse` → `/sse?key=a+b`；stdio：`cmd` + `["/c","npx","-y","@amap/amap-maps-mcp-server"]` + env 名 `AMAP_MAPS_API_KEY` | D3/D22 |
 | T7 | `tool/LoveToolExceptionProcessorTest` | L1 | 抛 `ToolExecutionException(def, new RuntimeException("secret jdbc url"))` → 中文可读文本，含工具名，不含 `secret jdbc url`、不含堆栈 | D7 |
 | T8 | `tool/LoggingToolCallbackTest` | L1 | `getToolDefinition()`/`call()` 原样委托；异常原样抛出 | D7 |
 | T9 | `agent/HistoryWindowHookTest` | L1 | 30 条输入 → 输出 ≤20；首条是 `UserMessage`；`ToolResponseMessage` 前必有带 toolCalls 的 `AssistantMessage`；`UpdatePolicy.REPLACE`；输入 ≤ 窗口时原样返回 | D17 |
@@ -834,6 +848,8 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | R16 | 检查点文件随会话增长无上限（仅上下文被裁剪） | 磁盘增长 | 低 | 单会话文本量小；目录可手工清理 | 长会话压测观察目录大小；超 10MB 再引入清理策略（非本轮） |
 | R17 | `AgentLlmNode` 把模型异常吞成 `"Exception: ..."` 文本（§3.4 源码事实），同步接口可能 200 + 错误文本 | 错误码失真、用户看到英文异常 | **高** | `LoveAgent.chat()` 兜底：优先走流式让异常冒泡 + `translate()` 沿 cause 链识别 `TransientAiException`；退路是哨兵 + 状态码分类，且绝不把该文本当答复 | 假模型抛 `TransientAiException` 的离线用例：`chat()` 必须抛异常或 `AGENT_UNAVAILABLE`；加一条「答复不含 `Exception: ` 前缀」断言 |
 | R18 | 裸 `ToolCallback`（非 `@Tool`/非 `SyncMcpToolCallback`）抛非 `ToolExecutionException` 时，`AgentToolNode` 会把 `e.getMessage()` 原样回喂模型（`AgentToolNode.executeSyncTool` 源码） | 异常信息泄漏进上下文 | 低（真实两条工具链都包成 `ToolExecutionException`） | 本轮沿用现状；新增工具必须走 `@Tool` 或经过包装 | reviewer 检查是否新增了裸 `ToolCallback`；如新增，要求包装成 `ToolExecutionException` |
+| R20 | ~~工具清单跨传输不一致~~ **已闭环（2026-10-24 真机实测）**：Streamable HTTP（`/mcp`）与回退 SSE（`/sse`）的**工具数量与默认排除项一致**——两者都是原始 15 个、暴露 12 个、排除同样的 3 个 `maps_schema_*`；`/mcp` 的 `initialize` 返回 200、`protocolVersion=2025-03-26`、`serverInfo.name=amap-sse-server`（服务端命名，不代表协议回退）。**逐名 diff 未做** | 已消除 | **已闭环** | 以启动日志 `高德 MCP 工具：原始 N 个，暴露 M 个` + 工具名清单为唯一事实来源；`exclude-tools` 用通配 `maps_schema_*`，不依赖精确清单；工具名不进 prompt | 实测证据：默认协议 `高德 MCP 工具：原始 15 个，暴露 12 个，排除 3 个 [maps_schema_personal_map, maps_schema_navi, maps_schema_take_taxi]`；`AMAP_MCP_PROTOCOL=sse` 同样 15/12/3；真实调用 `tool=maps_geo elapsedMs=198` → `tool=maps_around_search elapsedMs=286`，答出真实 POI。仅数量与默认排除项一致，逐名未比 |
+| R22 | **`/mcp` 端点不支持客户端开 GET SSE 长连接**（真机发现）：SDK 会打一条 WARN `McpTransportException: Invalid SSE response. Status code: 405 ... "Method not allowed"` | **不影响** `initialize()` / `tools/list` / `tools/call`（实测工具正常调用）；仅启动日志多一条 WARN | 低 | 接受该 WARN（每次启动 1 条），或用日志级别压掉；不做代码特殊处理（非目标） | 启动日志里该 WARN 只出现 1 次，且工具调用正常 |
 
 ### 12.2 待验证项（依赖真实环境，当前无法离线确认）
 
@@ -844,6 +860,7 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | V3 | ~~高德托管端点实际暴露的工具名/入参与 npm 包 0.0.8 的 12 个工具是否一致~~ **已闭环（2026-10-24 真实 key 实测）** | 无 key 时无法探测 | 已实测：托管端点暴露 **15 个**，`maps_bicycling` 实际名为 `maps_direction_bicycling`，另有 3 个 `maps_schema_*`（详见 §5.2） | 已按日志更新 §5.2；prompt 仍只描述能力不写工具名，无需改动。若后续再变，以启动日志为准 |
 | V4 | 托管端点的 SSE 连接稳定性（代理、心跳、长连超时） | 无 key 无法建立有效流 | 有 key 时连续 20 次工具调用冒烟，统计失败率与首包延迟 | 失败率 >10% → 切 `AMAP_MCP_PROTOCOL=stdio`（`cmd /c npx`），或加部署层 SSE 透传配置 |
 | V5 | `systemPrompt` + `model`（不传 `chatClient`）时 `ReactAgent` 的 system 消息装配方式 | 只能靠离线假模型观察最终 `Prompt`，真实链路未跑 | T15 断言 + 有 key 冒烟观察模型是否遵守 prompt | 不符则改用 `.chatClient(...)` 分支（R4） |
+| V6 | Streamable HTTP（`/mcp`）与 SSE（`/sse`）暴露的工具清单是否**逐名**一致 | 数量维度已真机实测一致（R20 闭环）；逐名 diff 需要把两份 `tools/list` 结果逐项对照，尚未做 | 分别以 `AMAP_MCP_PROTOCOL=streamable-http` / `sse` 启动，把两次启动日志的工具名清单 diff 一次 | 名称有差异 → 以 `/mcp` 的日志更新 §5.2；`exclude-tools` 已是通配 `maps_schema_*`，通常无需改动 |
 
 ### 12.3 本轮已定但可调整的项（按此实施，有新证据再改）
 
@@ -853,7 +870,7 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | 上下文窗口 | 20 条 | 真实对话出现「忘了上一轮」 | 调 `love-app.agent.history-window`，不改代码 |
 | 记忆实现 | `FileSystemSaver` | R16 磁盘增长或跨机部署 | `LOVE_AGENT_MEMORY_TYPE=memory` 临时降级；或换 `PostgresSaver`（依赖 RDS，需另评） |
 | 摘要能力 | 不做（只裁剪） | 长会话裁剪后上下文断裂明显 | 引入官方 `SummarizationHook`（会多一次模型调用） |
-| MCP 传输默认 | `sse` | V4 被证伪 | `AMAP_MCP_PROTOCOL=stdio`，不改代码 |
+| MCP 传输默认 | `streamable-http`（`/mcp`，D22） | 该端点不稳定，或工具清单与 `/sse` 差异过大（R20/V6） | 改环境变量 `AMAP_MCP_PROTOCOL=sse` / `stdio`，不改代码 |
 | 递归上限 | 8 | 复杂问题被截断（日志见 `AGENT_LOOP_LIMIT`） | 调到 12，同时观察成本 |
 | 流式兜底 | 零 chunk 时补发全文 | 前端要求严格逐字 | 改走 `streamMessages` 并在 `LoveAgent` 聚合，HTTP 契约不变 |
 
@@ -871,6 +888,7 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 | D19 | **可选 API Key 鉴权**：配了 `LOVE_APP_API_KEY` 才启用；请求头 `X-API-Key` 必须匹配，否则 401 `UNAUTHORIZED` | **默认关闭**，避免打断 curl/本地调试与既有 AC。启用后 `/api/hello`、`/v3/api-docs`、静态页**放行**（文档与页面要能打开） |
 | D20 | **限流**：按 API Key（未启用鉴权时按客户端 IP）做令牌桶，默认 **30 次/分钟**、桶容量 30；超限 429 `RATE_LIMITED` + `Retry-After: <秒>` | 内存实现，单实例有效；多实例下各实例独立计数（明确接受，非目标） |
 | D21 | **静态聊天页**：`src/main/resources/static/index.html` 单文件（原生 JS + `fetch` 读 SSE 流），**不引前端构建链** | 页面提供：消息输入、流式打字、Key 输入框（存 sessionStorage）、chatId 复用、错误码友好提示 |
+| D22 | **MCP 传输默认 Streamable HTTP**：`https://mcp.amap.com/mcp?key=<Web 服务 Key>`（`HttpClientStreamableHttpTransport`，端点路径 `love-app.agent.mcp.streamable-path`，默认 `/mcp`）；SSE（`/sse`）与 stdio（npx）保留为**可配置回退**；构建传输时 `openConnectionOnStartup(false)` | 高德官方推荐 Streamable HTTP（实测 `initialize` 200 / `protocolVersion=2025-03-26` / 自报 `amap-sse-server`，见 §3.2、R20）。`openConnectionOnStartup(false)` 让「构建传输」不建连，维持 D7「连不上也能启动」。切换只改环境变量，**不做协议自动探测/failover**（§13.5）；工具清单差异风险见 R20 |
 
 ### 13.2 验收标准
 
@@ -909,6 +927,7 @@ git add -A; git commit -m "<type>(<scope>): <中文摘要>"
 4. 不做前端框架、路由、历史会话列表 UI。
 5. 不改第一轮的 HTTP 契约（只新增 401/429 两种错误码）。
 6. 不做工具级 SSE 事件（前端仍只看文本）。
+7. **不做 MCP Server**（本项目只做 MCP Client）；**不做传输层自动降级探活**——`streamable-http` / `sse` / `stdio` 之间不自动 failover，切换一律靠 `AMAP_MCP_PROTOCOL`（D22）。
 
 ---
 
