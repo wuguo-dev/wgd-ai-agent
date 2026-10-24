@@ -32,11 +32,8 @@ springdoc:
         - '/**'
       packages-to-scan:
         - com.wgd.wgdaiagent.controller
-# knife4j
-knife4j:
-  enable: true
-  setting:
-    language: zh_cn
+# knife4j 已移除：4.5.0 与 Boot 3.4.4 的 Spring Framework 6.2 不兼容（/v3/api-docs 500），
+# 4.6.0 在仓库中不存在；接口文档改用 springdoc 自带 Swagger UI（地址见 README）。
 #springAI advisor日志
 logging:
   level:

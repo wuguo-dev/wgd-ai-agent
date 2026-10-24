@@ -47,6 +47,21 @@
             <scope>import</scope>
         </dependency>
         <!--
+          统一 springdoc 版本（v3 接口文档 / Swagger UI 实现）。
+          历史原因：knife4j 4.5.0 曾把 springdoc 钉在 2.3.0，与 Boot 3.4.4 的 Spring Framework
+          6.2.x 不兼容（ControllerAdviceBean(Object) 已删除 → /v3/api-docs 500）。
+          knife4j 已在本轮移除（理由见 <dependencies> 里的注释），保留 BOM 是为了让
+          webmvc-ui / webmvc-api / common 等模块版本始终一致，并防止将来某个传递依赖把
+          它们拉回 2.3.x 造成同类 NoSuchMethodError。
+        -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-bom</artifactId>
+            <version>2.8.9</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+        <!--
           必须钉住 MCP SDK 版本：spring-ai-mcp:1.1.2 需要 0.17.0，而
           spring-ai-alibaba-agent-framework 在 depth 2 声明 0.14.0，
           nearest-wins 会选中 0.14.0，导致 SyncMcpToolCallback 运行期 NoSuchMethodError。
@@ -87,11 +102,23 @@
             <version>5.8.47</version>
         </dependency>
 
-        <!-- SpringBoot3 必须用 knife4j 4.x，groupId 不变 -->
+        <!--
+          文档依赖：springdoc-openapi-starter-webmvc-ui（自带 Swagger UI）。
+
+          原先用 knife4j-openapi3-jakarta-spring-boot-starter:4.5.0，但它与 Boot 3.4.4 / Spring
+          Framework 6.2.x 无法共存，两条路都实测过（字节码核对 + 真机启动）：
+            · springdoc 2.3.0（knife4j 4.5.0 的编译目标，getGroupConfigs() 返回 List）
+              → GenericResponseService 调已被删除的 ControllerAdviceBean(Object)
+                → /api/v3/api-docs 与 /api/doc.html 必然 500；
+            · springdoc 2.5.0/2.6.0（已改成 Set，但旧构造器调用还在）→ 同样 500；
+            · springdoc 2.8.x（旧构造器已消除）→ knife4j 自己的 Knife4jOpenApiCustomizer
+              调 getGroupConfigs() 抛 NoSuchMethodError。
+          结论：没有任何 springdoc 版本能同时满足 knife4j 4.5.0 与 Spring Framework 6.2，
+          且 knife4j 4.6.0 在仓库中不存在（404）。因此移除 knife4j，改用官方 Swagger UI。
+        -->
         <dependency>
-            <groupId>com.github.xiaoymin</groupId>
-            <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
-            <version>4.5.0</version>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
         </dependency>
 
 

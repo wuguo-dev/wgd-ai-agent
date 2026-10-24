@@ -12,7 +12,7 @@ Spring Boot 3.4.4 + Spring AI 1.1.2 + Spring AI Alibaba 的演示工程：把 Da
 | Agent | `spring-ai-alibaba-agent-framework`（`ReactAgent`、检查点/记忆、工具回调） |
 | MCP | `spring-ai-mcp` + `io.modelcontextprotocol.sdk:mcp:0.17.0`（手工装配，不用 MCP starter） |
 | 知识库 | Spring AI PgVector（PostgreSQL + pgvector，1536 维） |
-| 接口文档 | Knife4j 4.5.0（`springdoc-openapi`） |
+| 接口文档 | springdoc-openapi 2.8.9 自带 Swagger UI（原 Knife4j 4.5.0 因与 Spring Framework 6.2 不兼容已移除，见下） |
 | 构建 | Maven 3.9（依赖走阿里云公共仓库镜像） |
 
 ## 快速开始
@@ -133,16 +133,40 @@ mvn -o test -Dtest='LoveApp*Test'
 mvn -o dependency:tree "-Dincludes=io.modelcontextprotocol.sdk"
 ```
 
-## 接口文档（Knife4j）
+## 接口文档（Swagger UI）
 
 应用启动后：
 
-- Knife4j：<http://localhost:8123/api/doc.html>
-- Swagger UI：<http://localhost:8123/api/swagger-ui.html>
+- Swagger UI：<http://localhost:8123/api/swagger-ui.html>（会跳转到 `/api/swagger-ui/index.html`）
 - OpenAPI JSON：<http://localhost:8123/api/v3/api-docs>
 
+也可以用 `curl` 自检：
+
+```powershell
+curl.exe -s -o NUL -w "%{http_code}`n" http://localhost:8123/api/v3/api-docs
+curl.exe -s -o NUL -w "%{http_code}`n" http://localhost:8123/api/swagger-ui.html
+```
+
 端口与 context-path 来自 `src/main/resources/application.yml`（`server.port=8123`、`server.servlet.context-path=/api`）。
-Knife4j 只扫描 `com.wgd.wgdaiagent.controller`，新增 controller 必须落在该包下才会出现在文档里。
+文档只扫描 `com.wgd.wgdaiagent.controller`（`springdoc.group-configs[0].packages-to-scan`），
+新增 controller 必须落在该包下才会出现在文档里。
+
+### 为什么不再用 Knife4j
+
+原先依赖 `knife4j-openapi3-jakarta-spring-boot-starter:4.5.0`，它把 springdoc 钉在 2.3.0。
+Boot 3.4.4 使用的 Spring Framework 6.2.x 已删除 `ControllerAdviceBean(Object)` 构造器，
+于是 `/api/v3/api-docs`、`/api/doc.html` 必然 500（`NoSuchMethodError`）。实测的版本矩阵：
+
+| springdoc | `getGroupConfigs()` 返回类型 | `GenericResponseService` 是否仍调 `ControllerAdviceBean(Object)` | 结果 |
+| --- | --- | --- | --- |
+| 2.3.0 | `List`（knife4j 4.5.0 的编译目标） | 是 | api-docs 500 |
+| 2.5.0 / 2.6.0 | `Set` | 是 | api-docs 500 |
+| 2.7.x | 阿里云仓库不存在（不可用） | — | — |
+| 2.8.0 / 2.8.9 | `Set` | 否 | knife4j 自身 `NoSuchMethodError` |
+
+结论：不存在能同时满足 knife4j 4.5.0 与 Spring Framework 6.2 的 springdoc 版本，且 knife4j 4.6.0
+在仓库中不存在（404）。因此移除 knife4j、改用 springdoc 官方 Swagger UI，并用
+`springdoc-openapi-bom:2.8.9` 锁住全部 springdoc 模块版本（`/api/doc.html` 因此不再存在）。
 
 ## 目录速览
 
@@ -151,10 +175,14 @@ Knife4j 只扫描 `com.wgd.wgdaiagent.controller`，新增 controller 必须落�
 .mvn/maven.config            # 自动给每条 mvn 命令加 -s .mvn/settings.xml
 src/main/java/com/wgd/wgdaiagent/
   app/                       # ChatClient 形态的示例应用（恋爱大师、销售分析）
+  agent/                     # ReactAgent 内核、prompt 装载、流式输出映射
+  tool/                      # 本地工具 + 高德 MCP 工具提供者
   rag/                       # 知识库文档加载、PgVector 配置、ETL
+  chatmemory/                # 会话记忆实现
   advisor/                   # 自定义 Advisor（复读改写）
+  controller/ service/ model/ exception/   # HTTP 接口层（/ai/love/agent/**）
 src/main/resources/
-  application.yml            # 端口、springdoc/Knife4j、重试策略
+  application.yml            # 端口、springdoc（Swagger UI）、重试策略、love-app.* 配置
   application-local.yml      # 本地凭据（gitignore，不入库）
   application-pgvector.yml   # 向量库参数、ETL 开关
   document/                  # 知识库 Markdown
@@ -171,3 +199,5 @@ src/test/java/               # offline / live 两层测试（@Tag）
 | `Unknown lifecycle phase ".xxx"` | `-Dkey=value` 被 shell 拆开，给整个参数加引号 |
 | `mvn -o ...` 报缺依赖 | 本地仓库没预热：先跑一次不带 `-o` 的 `mvn -DskipTests compile` |
 | `mvn -o test` 跑出一堆 live 用例 | 测试类漏了 `@Tag`，默认只需 `offline` / `live` 二选一 |
+| `/api/v3/api-docs` 返回 500 且日志有 `NoSuchMethodError: ControllerAdviceBean` | springdoc 版本与 Spring Framework 6.2 不匹配；本仓库已锁 springdoc 2.8.9，**不要**再把 knife4j 4.5.0 加回来 |
+| `/api/doc.html` 返回 404 | 正常：knife4j 已移除，用 `/api/swagger-ui.html` |
