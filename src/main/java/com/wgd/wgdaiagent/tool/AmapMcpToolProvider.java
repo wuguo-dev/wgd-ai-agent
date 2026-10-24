@@ -98,6 +98,9 @@ public class AmapMcpToolProvider {
 
         McpSyncClient client = null;
         try {
+            // 可观测性：先打「实际走哪条协议、打到哪个路径」，排查时不用猜是 /mcp 还是 /sse。
+            // 只含协议名、base host、路径（或 stdio 命令），绝不含 key 与完整 URL。
+            log.info("MCP 传输：{}", transportDescription());
             McpClientTransport transport = transportFactory().create();
             client = createClient(transport);
             client.initialize();
@@ -153,8 +156,7 @@ public class AmapMcpToolProvider {
         }
     }
 
-    private List<String> excludeTools() {
-        AgentProperties.Mcp mcp = properties.getMcp();
+    private List<String> excludeTools() {        AgentProperties.Mcp mcp = properties.getMcp();
         return mcp == null || mcp.getExcludeTools() == null ? List.of() : mcp.getExcludeTools();
     }
 
@@ -189,6 +191,45 @@ public class AmapMcpToolProvider {
             return List.of();
         }
         return result.tools();
+    }
+
+    /**
+     * 启动期「实际传输」的可观测描述，例：
+     * {@code protocol=streamable-http，base=https://mcp.amap.com，path=/mcp}。
+     *
+     * <p>只由 protocol / baseUrl / streamablePath / ssePath / stdio.command 拼成，
+     * <b>刻意不碰 {@code mcp.key}</b>，也不拼完整 URL（没有 {@code ?key=}）；stdio 下 base 记为 {@code -}
+     * （stdio 不经过 HTTP base，打出来只会误导排查）。包可见，便于离线单测。</p>
+     */
+    String transportDescription() {
+        AgentProperties.Mcp mcp = properties.getMcp();
+        if (mcp == null) {
+            return "protocol=<未配置>，base=-，path=-";
+        }
+        AgentProperties.Mcp.Protocol protocol = mcp.getProtocol() == null
+                ? AgentProperties.Mcp.Protocol.STREAMABLE_HTTP
+                : mcp.getProtocol();
+        return switch (protocol) {
+            case STREAMABLE_HTTP -> description("streamable-http", mcp.getBaseUrl(),
+                    pathOrDefault(mcp.getStreamablePath(), "/mcp"));
+            case SSE -> description("sse", mcp.getBaseUrl(), pathOrDefault(mcp.getSsePath(), "/sse"));
+            case STDIO -> description("stdio", null, stdioCommand(mcp));
+        };
+    }
+
+    private static String description(String protocol, String baseUrl, String target) {
+        return "protocol=" + protocol
+                + "，base=" + (StringUtils.hasText(baseUrl) ? baseUrl.trim() : "-")
+                + "，path=" + target;
+    }
+
+    private static String pathOrDefault(String path, String fallback) {
+        return StringUtils.hasText(path) ? path.trim() : fallback;
+    }
+
+    private static String stdioCommand(AgentProperties.Mcp mcp) {
+        AgentProperties.Stdio stdio = mcp.getStdio();
+        return stdio != null && StringUtils.hasText(stdio.getCommand()) ? stdio.getCommand().trim() : "cmd";
     }
 
     /** 返回不可用原因，可用时返回 {@code null}。 */

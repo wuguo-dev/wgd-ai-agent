@@ -18,15 +18,17 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 按协议造 {@link McpClientTransport}（规格 §5.3 / §8.2 / §9.3 T6）。
+ * 按协议造 {@link McpClientTransport}（规格 §5.3 / §8.2 / §9.3 T6；W1 起默认 Streamable HTTP）。
  *
- * <p>两条硬约束：</p>
+ * <p>三条硬约束：</p>
  * <ol>
- *   <li><b>SSE</b>：base 只到 host，{@code ?key=<URL 编码后的 key>} 必须拼在端点里。
- *       原因：SDK 用 {@code Utils.resolveUri}（内部是 {@code URI.resolve}）拼地址，
+ *   <li><b>Streamable HTTP（默认）</b>：base 只到 host，端点写 {@code /mcp?key=<URL 编码后的 key>}；
+ *       且必须 {@code openConnectionOnStartup(false)}——构建传输时不建连，否则 MCP 不可达会拖垮启动（D7）。</li>
+ *   <li><b>SSE（回退）</b>：同样 base 只到 host，{@code ?key=<URL 编码后的 key>} 必须拼在端点里。
+ *       原因（与上条相同）：SDK 用 {@code Utils.resolveUri}（内部是 {@code URI.resolve}）拼地址，
  *       base 上带 query 会被丢弃；而 Spring AI 1.1.2 的 {@code SseParameters} 只有
  *       {@code url}/{@code sseEndpoint}，没有 per-connection header 配置。</li>
- *   <li><b>stdio</b>：Windows 下直接执行 {@code npx}(.cmd) 会失败，所以走 {@code cmd /c npx ...}，
+ *   <li><b>stdio（备选）</b>：Windows 下直接执行 {@code npx}(.cmd) 会失败，所以走 {@code cmd /c npx ...}，
  *       凭据通过子进程环境变量传递（键名可配，默认 {@code AMAP_MAPS_API_KEY}）。</li>
  * </ol>
  *

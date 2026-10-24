@@ -1,12 +1,17 @@
 package com.wgd.wgdaiagent.tool;
 
 import com.wgd.wgdaiagent.agent.AgentProperties;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
@@ -219,6 +224,89 @@ class AmapMcpToolProviderTest {
         assertFalse(AmapMcpToolProvider.isExcluded("MAPS_WEATHER", List.of("maps_weather")), "匹配大小写敏感");
         assertFalse(AmapMcpToolProvider.isExcluded("maps_weather", List.of()), "空白名单不排除任何工具");
         assertFalse(AmapMcpToolProvider.isExcluded("maps_weather", List.of(" ", "")), "空 entry 应被忽略");
+    }
+
+    // ---------- W1.1 启动日志可观测性 ----------
+
+    @Test
+    void transportDescriptionReportsActualProtocolWithoutKey() {
+        AgentProperties properties = properties(DUMMY_KEY);
+        AmapMcpToolProvider provider = provider(properties, mock(McpSyncClient.class));
+
+        String description = provider.transportDescription();
+
+        assertTrue(description.contains("protocol=streamable-http"), description);
+        assertTrue(description.contains("base=https://mcp.amap.com"), description);
+        assertTrue(description.contains("path=/mcp"), description);
+        assertFalse(description.contains(DUMMY_KEY), "描述里绝不能出现 key：" + description);
+        assertFalse(description.contains("key="), "也不许出现 ?key= 片段：" + description);
+    }
+
+    @Test
+    void transportDescriptionFollowsConfiguredProtocolAndPaths() {
+        AgentProperties sseProperties = properties(DUMMY_KEY);
+        sseProperties.getMcp().setProtocol(AgentProperties.Mcp.Protocol.SSE);
+        sseProperties.getMcp().setSsePath("/custom/sse");
+        assertEquals("protocol=sse，base=https://mcp.amap.com，path=/custom/sse",
+                provider(sseProperties, mock(McpSyncClient.class)).transportDescription());
+
+        AgentProperties stdioProperties = properties(DUMMY_KEY);
+        stdioProperties.getMcp().setProtocol(AgentProperties.Mcp.Protocol.STDIO);
+        assertEquals("protocol=stdio，base=-，path=cmd",
+                provider(stdioProperties, mock(McpSyncClient.class)).transportDescription(),
+                "stdio 不经过 HTTP base，base 记为 - 以免误导排查");
+
+        AgentProperties blankPathProperties = properties(DUMMY_KEY);
+        blankPathProperties.getMcp().setStreamablePath("  ");
+        assertTrue(provider(blankPathProperties, mock(McpSyncClient.class)).transportDescription()
+                .contains("path=/mcp"), "空白路径回落到 /mcp");
+    }
+
+    @Test
+    void startupLogsActualTransportAtInfoWithoutKey() {
+        String secretKey = "super-secret-key-value";
+        AgentProperties properties = properties(secretKey);
+        McpSyncClient stub = mock(McpSyncClient.class);
+        when(stub.listTools()).thenReturn(new McpSchema.ListToolsResult(fifteenTools(), null));
+
+        List<String> transportLogs = captureTransportLogs(() -> provider(properties, stub).toolset());
+
+        assertEquals(1, transportLogs.size(), "建连前必须恰好打一条实际传输 INFO，实际：" + transportLogs);
+        String line = transportLogs.get(0);
+        assertTrue(line.contains("protocol=streamable-http"), line);
+        assertTrue(line.contains("path=/mcp"), line);
+        assertFalse(line.contains(secretKey), "日志绝不能出现 key 明文：" + line);
+        assertFalse(line.contains("key="), "也不许出现 ?key= 片段：" + line);
+    }
+
+    @Test
+    void startupLogsSseTransportWhenSseProtocolConfigured() {
+        AgentProperties properties = properties("sse-secret-key");
+        properties.getMcp().setProtocol(AgentProperties.Mcp.Protocol.SSE);
+        McpSyncClient stub = mock(McpSyncClient.class);
+        when(stub.listTools()).thenReturn(new McpSchema.ListToolsResult(List.of(tool("maps_weather")), null));
+
+        List<String> transportLogs = captureTransportLogs(() -> provider(properties, stub).toolset());
+
+        assertEquals(List.of("MCP 传输：protocol=sse，base=https://mcp.amap.com，path=/sse"), transportLogs);
+    }
+
+    /** 抓取建连过程中 {@code AmapMcpToolProvider} 打出的「MCP 传输：」INFO 行。 */
+    private static List<String> captureTransportLogs(Runnable action) {
+        Logger logger = (Logger) LoggerFactory.getLogger(AmapMcpToolProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            logger.detachAppender(appender);
+        }
+        return appender.list.stream()
+                .filter(event -> event.getLevel() == Level.INFO)
+                .map(ILoggingEvent::getFormattedMessage)
+                .filter(message -> message.contains("MCP 传输："))
+                .toList();
     }
 
     // ---------- 辅助 ----------
