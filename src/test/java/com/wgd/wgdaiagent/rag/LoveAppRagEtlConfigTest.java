@@ -1,6 +1,7 @@
 package com.wgd.wgdaiagent.rag;
 
 import jakarta.annotation.Resource;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -23,6 +24,7 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@Tag("offline")
 class LoveAppRagEtlConfigTest {
 
     @Test

@@ -1,5 +1,6 @@
 package com.wgd.wgdaiagent.advisor;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
@@ -22,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ReReadingAdvisor 纯单元测试：不启动 Spring、不调用模型接口。
  * 用来证明改写确实生效（而不是"能编译但空操作"），且不污染历史消息。
  */
+@Tag("offline")
 class ReReadingAdvisorTest {
 
     private static final String HISTORY_QUESTION = "你好，我是wgd。我捡到了一只猫，我给他取名叫咖啡！";

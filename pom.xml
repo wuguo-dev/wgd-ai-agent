@@ -16,6 +16,11 @@
 
     <properties>
         <java.version>21</java.version>
+        <!--
+          surefire 默认排除的 JUnit tag。默认值 live 表示「离线门槛只跑 offline」，
+          profile live 会把它置为 none 并只跑 live（见文件末尾的 <profiles>）。
+        -->
+        <surefire.excluded.groups>live</surefire.excluded.groups>
     </properties>
 
     <dependencyManagement>
@@ -40,6 +45,17 @@
             <version>1.1.2.1</version>
             <type>pom</type>
             <scope>import</scope>
+        </dependency>
+        <!--
+          必须钉住 MCP SDK 版本：spring-ai-mcp:1.1.2 需要 0.17.0，而
+          spring-ai-alibaba-agent-framework 在 depth 2 声明 0.14.0，
+          nearest-wins 会选中 0.14.0，导致 SyncMcpToolCallback 运行期 NoSuchMethodError。
+          spring-ai-bom 不管理该 SDK，所以只能在这里钉死。
+        -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>0.17.0</version>
         </dependency>
         </dependencies>
     </dependencyManagement>
@@ -137,14 +153,71 @@
             <artifactId>spring-ai-advisors-vector-store</artifactId>
         </dependency>
 
+        <!--
+          MCP 客户端核心（不引入 spring-ai-starter-mcp-client：它声明 Spring Boot 3.5.8，
+          与本项目 3.4.4 父 POM 冲突；本项目手工装配 MCP 客户端）。版本由 spring-ai-bom 管理，
+          底层 mcp SDK 版本由上面的 dependencyManagement 钉为 0.17.0。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-mcp</artifactId>
+        </dependency>
+
+        <!-- 请求参数校验：@Valid / @NotBlank / MethodArgumentNotValidException -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
 
     </dependencies>
+
+    <!--
+      IDE 兜底：IntelliJ 等工具默认不读 .mvn/maven.config，也就不会加载 .mvn/settings.xml 里的
+      aliyun-public mirror；这里把同一镜像登记为项目级仓库，保证 IDE 解析依赖时同样走阿里云。
+      命令行场景仍以 .mvn/settings.xml 的 <mirrorOf>*</mirrorOf> 为准。
+    -->
+    <repositories>
+        <repository>
+            <id>aliyun-public</id>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+    <pluginRepositories>
+        <pluginRepository>
+            <id>aliyun-public</id>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
 
     <build>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!--
+              测试分层：默认排除 live tag（真 LLM / 真 RDS / 真高德，会花钱且依赖外网），
+              所以 `mvn -o test` 只跑 offline。要跑真环境用 `mvn -Plive test`。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${surefire.excluded.groups}</excludedGroups>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -186,5 +259,30 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+          mvn -Plive test：只跑打了 @Tag("live") 的用例（真模型、真 pgvector、真高德）。
+          需要 AMAP_MCP_KEY、DashScope key、PGVECTOR_* 等真实环境变量，会花钱。
+        -->
+        <profile>
+            <id>live</id>
+            <properties>
+                <surefire.excluded.groups>none</surefire.excluded.groups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>live</groups>
+                            <excludedGroups>${surefire.excluded.groups}</excludedGroups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

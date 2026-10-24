@@ -3,6 +3,7 @@ package com.wgd.wgdaiagent.app;
 import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
@@ -32,6 +33,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.*;
 
 /** 使用真实 DashScope 客户端和项目重试配置，仅模拟 HTTP 响应；不调用云服务。 */
+@Tag("offline")
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class LoveAppRateLimitTest {
 

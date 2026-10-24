@@ -1,6 +1,7 @@
 package com.wgd.wgdaiagent.rag;
 
 import jakarta.annotation.Resource;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
@@ -14,6 +15,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@Tag("live")
 @SpringBootTest(properties = "love-app.rag.etl.enabled=false")
 @ActiveProfiles({"local", "pgvector"})
 class LoveAppPgVectorIntegrationTest {
