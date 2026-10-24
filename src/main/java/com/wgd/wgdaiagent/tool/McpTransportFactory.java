@@ -2,6 +2,7 @@ package com.wgd.wgdaiagent.tool;
 
 import com.wgd.wgdaiagent.agent.AgentProperties;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
 import io.modelcontextprotocol.json.McpJsonMapper;
@@ -10,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
 import java.net.URLEncoder;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
@@ -44,14 +46,33 @@ public class McpTransportFactory {
         this.mcp = Objects.requireNonNull(Objects.requireNonNull(properties, "properties").getMcp(), "mcp");
     }
 
-    /** 按 {@code love-app.agent.mcp.protocol} 造传输；未配置时按 SSE 处理。 */
+    /** 默认协议（与 {@code AgentProperties.Mcp#protocol} 的默认值保持一致）。 */
+    private static final AgentProperties.Mcp.Protocol DEFAULT_PROTOCOL =
+            AgentProperties.Mcp.Protocol.STREAMABLE_HTTP;
+
+    /** 按 {@code love-app.agent.mcp.protocol} 造传输；未配置时按 Streamable HTTP 处理（W1）。 */
     public McpClientTransport create() {
-        AgentProperties.Mcp.Protocol protocol =
-                mcp.getProtocol() == null ? AgentProperties.Mcp.Protocol.SSE : mcp.getProtocol();
+        AgentProperties.Mcp.Protocol protocol = mcp.getProtocol() == null ? DEFAULT_PROTOCOL : mcp.getProtocol();
         return switch (protocol) {
             case STDIO -> createStdio();
             case SSE -> createSse();
+            case STREAMABLE_HTTP -> createStreamableHttp();
         };
+    }
+
+    /**
+     * 高德 Streamable HTTP 端点（默认协议）：{@code https://mcp.amap.com} + {@code /mcp?key=...}。
+     *
+     * <p>{@code openConnectionOnStartup(false)} 是硬要求：构建传输时不建连，连不上也不会拖垮启动（D7），
+     * 真正的连接由 {@code AmapMcpToolProvider} 在 try/catch 内主动 {@code initialize()} 触发。</p>
+     */
+    public McpClientTransport createStreamableHttp() {
+        return HttpClientStreamableHttpTransport.builder(mcp.getBaseUrl())
+                .endpoint(streamableEndpoint())
+                .openConnectionOnStartup(false)
+                .clientBuilder(HttpClient.newBuilder()
+                        .connectTimeout(orDefault(mcp.getConnectTimeout(), DEFAULT_CONNECT_TIMEOUT)))
+                .build();
     }
 
     /** 高德托管端点：{@code https://mcp.amap.com} + {@code /sse?key=...}。 */
@@ -73,6 +94,17 @@ public class McpTransportFactory {
      */
     String sseEndpoint() {
         String path = StringUtils.hasText(mcp.getSsePath()) ? mcp.getSsePath() : "/sse";
+        return path + "?key=" + URLEncoder.encode(nullToEmpty(mcp.getKey()), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Streamable HTTP 端点：{@code /mcp?key=<URL 编码后的 key>}。包可见，便于离线用例断言。
+     *
+     * <p>刻意不复用 {@link #sseEndpoint()}：两个协议路径不同（{@code /sse} vs {@code /mcp}），
+     * 拼法相同（query 必须放端点，base 上的 query 会被 {@code URI.resolve} 丢弃）。</p>
+     */
+    String streamableEndpoint() {
+        String path = StringUtils.hasText(mcp.getStreamablePath()) ? mcp.getStreamablePath() : "/mcp";
         return path + "?key=" + URLEncoder.encode(nullToEmpty(mcp.getKey()), StandardCharsets.UTF_8);
     }
 

@@ -2,13 +2,17 @@ package com.wgd.wgdaiagent.tool;
 
 import com.wgd.wgdaiagent.agent.AgentProperties;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
+import io.modelcontextprotocol.json.McpJsonMapper;
+import io.modelcontextprotocol.util.Utils;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.InputStream;
+import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +32,8 @@ class McpTransportFactoryTest {
     @Test
     void sseKeepsBaseAtHostAndPutsUrlEncodedKeyIntoEndpoint() {
         AgentProperties properties = new AgentProperties();
+        // 默认协议已切到 streamable-http，这里显式回退到 sse
+        properties.getMcp().setProtocol(AgentProperties.Mcp.Protocol.SSE);
         properties.getMcp().setBaseUrl("https://mcp.amap.com");
         properties.getMcp().setSsePath("/sse");
         properties.getMcp().setKey("a b");
@@ -104,6 +110,76 @@ class McpTransportFactoryTest {
         assertTrue(properties.getMcp().isEnabled(), "默认启用；无 key 时由 provider 降级");
     }
 
+    // ---------- W1：Streamable HTTP 默认 + SSE/stdio 回退 ----------
+
+    @Test
+    void defaultProtocolBuildsStreamableHttpTransport() {
+        AgentProperties properties = new AgentProperties();
+        properties.getMcp().setKey("a b");
+
+        assertEquals(AgentProperties.Mcp.Protocol.STREAMABLE_HTTP, properties.getMcp().getProtocol(),
+                "默认协议必须是 STREAMABLE_HTTP");
+        assertInstanceOf(HttpClientStreamableHttpTransport.class, new McpTransportFactory(properties).create());
+    }
+
+    @Test
+    void streamableEndpointPutsUrlEncodedKeyIntoMcpPath() {
+        AgentProperties properties = new AgentProperties();
+        properties.getMcp().setBaseUrl("https://mcp.amap.com");
+        properties.getMcp().setKey("a b");
+        McpTransportFactory factory = new McpTransportFactory(properties);
+
+        assertEquals("/mcp?key=a+b", factory.streamableEndpoint(),
+                "query 必须拼在端点里（Utils.resolveUri 走 URI.resolve，base 上的 query 会被丢弃）");
+        assertEquals("/sse?key=a+b", factory.sseEndpoint(), "SSE 路径独立保留，两者不能混淆");
+        // 直接验证 SDK 的拼接结果：base(host) + endpoint(/mcp?key=...) 解析后必须保住 query
+        assertEquals(URI.create("https://mcp.amap.com/mcp?key=a+b"),
+                Utils.resolveUri(URI.create("https://mcp.amap.com"), factory.streamableEndpoint()),
+                "与 SSE 同构：endpoint 里的 query 不会被 URI.resolve 丢掉");
+    }
+
+    @Test
+    void streamablePathIsConfigurableAndDefaultsToMcp() {
+        AgentProperties properties = new AgentProperties();
+        properties.getMcp().setKey("k+y");
+        assertEquals("/mcp?key=k%2By", new McpTransportFactory(properties).streamableEndpoint());
+
+        properties.getMcp().setStreamablePath("/custom/mcp");
+        assertEquals("/custom/mcp?key=k%2By", new McpTransportFactory(properties).streamableEndpoint());
+
+        properties.getMcp().setStreamablePath(null);
+        assertEquals("/mcp?key=k%2By", new McpTransportFactory(properties).streamableEndpoint(),
+                "空白路径回落到 /mcp");
+    }
+
+    @Test
+    void explicitSseProtocolStillBuildsSseTransportAsFallback() {
+        AgentProperties properties = new AgentProperties();
+        properties.getMcp().setProtocol(AgentProperties.Mcp.Protocol.SSE);
+        properties.getMcp().setKey("dummy-key");
+
+        assertInstanceOf(HttpClientSseClientTransport.class, new McpTransportFactory(properties).create());
+    }
+
+    @Test
+    void explicitStdioProtocolStillBuildsStdioTransportAsFallback() {
+        AgentProperties properties = new AgentProperties();
+        properties.getMcp().setProtocol(AgentProperties.Mcp.Protocol.STDIO);
+        properties.getMcp().setKey("dummy-key");
+
+        assertInstanceOf(StdioClientTransport.class, new McpTransportFactory(properties).create());
+    }
+
+    @Test
+    void nullProtocolFallsBackToStreamableHttp() {
+        AgentProperties properties = new AgentProperties();
+        properties.getMcp().setProtocol(null);
+        properties.getMcp().setKey("dummy-key");
+
+        assertInstanceOf(HttpClientStreamableHttpTransport.class, new McpTransportFactory(properties).create(),
+                "未配置协议时与默认值一致，不能 NPE");
+    }
+
     /**
      * 离线守卫 §8.2 的配置块：yml 能解析、字段按规格、key 只有环境变量占位（AC8/§8.4）。
      * 默认门槛不启动 Spring 上下文，所以这里直接读 classpath 上的 application.yml。
@@ -122,10 +198,11 @@ class McpTransportFactoryTest {
 
         Map<String, Object> mcp = section(agent, "mcp");
         assertEquals("${AMAP_MCP_ENABLED:true}", mcp.get("enabled"));
-        assertEquals("${AMAP_MCP_PROTOCOL:sse}", mcp.get("protocol"));
+        assertEquals("${AMAP_MCP_PROTOCOL:streamable-http}", mcp.get("protocol"), "默认协议必须是 streamable-http（W1）");
         assertEquals("${AMAP_MCP_KEY:}", mcp.get("key"), "key 只能是环境变量占位，绝不写真实值");
         assertEquals("${AMAP_MCP_BASE_URL:https://mcp.amap.com}", mcp.get("base-url"));
-        assertEquals("${AMAP_MCP_SSE_PATH:/sse}", mcp.get("sse-path"));
+        assertEquals("${AMAP_MCP_SSE_PATH:/sse}", mcp.get("sse-path"), "回退路径必须保留");
+        assertEquals("${AMAP_MCP_STREAMABLE_PATH:/mcp}", mcp.get("streamable-path"));
         assertEquals("3s", mcp.get("connect-timeout"));
         assertEquals("20s", mcp.get("request-timeout"));
 

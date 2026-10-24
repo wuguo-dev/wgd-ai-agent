@@ -67,7 +67,8 @@ public class AgentProperties {
 
         private boolean enabled = true;
 
-        private Protocol protocol = Protocol.SSE;
+        /** 默认走 Streamable HTTP（W1）；sse/stdio 保留为回退，可用 {@code AMAP_MCP_PROTOCOL} 切回。 */
+        private Protocol protocol = Protocol.STREAMABLE_HTTP;
 
         /** 唯一凭据来源（环境变量 {@code AMAP_MCP_KEY}）；为空即降级为「仅本地工具」。 */
         private String key = "";
@@ -77,6 +78,12 @@ public class AgentProperties {
 
         /** 代码负责拼 {@code ?key=}，所以默认值不带 query。 */
         private String ssePath = "/sse";
+
+        /**
+         * Streamable HTTP 的端点路径（默认协议用）。与 {@link #ssePath} 并列，
+         * query 同样由代码拼成 {@code /mcp?key=...}。
+         */
+        private String streamablePath = "/mcp";
 
         private Duration connectTimeout = Duration.ofSeconds(3);
 
@@ -93,7 +100,11 @@ public class AgentProperties {
         private Stdio stdio = new Stdio();
 
         public enum Protocol {
+            /** Streamable HTTP（默认）：{@code POST /mcp?key=...}。 */
+            STREAMABLE_HTTP,
+            /** 旧版 SSE 长连接：{@code GET /sse?key=...}，回退用。 */
             SSE,
+            /** npm stdio 备选：{@code cmd /c npx ...}。 */
             STDIO
         }
     }

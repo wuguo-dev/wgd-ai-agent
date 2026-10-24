@@ -54,11 +54,13 @@ love-app:
       dir: ${LOVE_AGENT_MEMORY_DIR:chat-memory/agent}
     mcp:
       enabled: ${AMAP_MCP_ENABLED:true}
-      protocol: ${AMAP_MCP_PROTOCOL:sse}
+      # 默认 Streamable HTTP；回退可用 sse / stdio（AMAP_MCP_PROTOCOL=sse|stdio）
+      protocol: ${AMAP_MCP_PROTOCOL:streamable-http}
       key: ${AMAP_MCP_KEY:}
       # 只到 host：query 由代码拼到端点里（URI.resolve 会丢弃 base 上的 query）
       base-url: ${AMAP_MCP_BASE_URL:https://mcp.amap.com}
       sse-path: ${AMAP_MCP_SSE_PATH:/sse}
+      streamable-path: ${AMAP_MCP_STREAMABLE_PATH:/mcp}
       connect-timeout: 3s
       request-timeout: 20s
       stdio:
