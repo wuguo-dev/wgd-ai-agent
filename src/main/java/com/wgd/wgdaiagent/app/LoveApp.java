@@ -91,7 +91,8 @@ public class LoveApp {
                 .call()
                 .chatResponse();
         String content = Assert.notNull(chatResponse.getResult(), "输出结果为空，请重试").getOutput().getText();
-        log.info("content:{}", content);
+        // §7.4：INFO 不打答复正文，只打长度
+        log.info("content: answerChars={}", content == null ? 0 : content.length());
         return content;
     }
 
@@ -119,7 +120,8 @@ public class LoveApp {
                 .call()
                 .chatResponse();
         String content = response.getResult().getOutput().getText();
-        log.info("content: {}", content);
+        // §7.4：INFO 不打答复正文，只打长度
+        log.info("content: answerChars={}", content == null ? 0 : content.length());
         return content;
     }
 
@@ -134,7 +136,10 @@ public class LoveApp {
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 .call()
                 .entity(LoveReport.class);
-        log.info("loveReport: {}", loveReport);
+        // §7.4：报告标题/建议属于用户相关内容，只打结构与长度
+        log.info("loveReport: titleChars={} suggestions={}",
+                loveReport == null || loveReport.title() == null ? 0 : loveReport.title().length(),
+                loveReport == null || loveReport.suggestions() == null ? 0 : loveReport.suggestions().size());
         return loveReport;
     }
 

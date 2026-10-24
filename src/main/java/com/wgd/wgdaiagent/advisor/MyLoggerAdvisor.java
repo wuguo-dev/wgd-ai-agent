@@ -17,7 +17,7 @@ import java.util.List;
 
 /**
  * 自定义日志 Advisor
- * 打印 info 级别日志、只输出单次用户提示词和 AI 回复的文本
+ * 打印 info 级别日志，<b>只打字符数不打正文</b>（规格 §7.4：用户消息与答复正文属隐私）
  */
 @Slf4j
 public class MyLoggerAdvisor implements BaseAdvisor {
@@ -41,7 +41,7 @@ public class MyLoggerAdvisor implements BaseAdvisor {
 
     @Override
     public ChatClientRequest before(ChatClientRequest request, AdvisorChain chain) {
-        log.info("AI Request: {}", lastUserText(request.prompt()));
+        logRequest(request.prompt());
         return request;
     }
 
@@ -53,8 +53,8 @@ public class MyLoggerAdvisor implements BaseAdvisor {
 
     @Override
     public Flux<ChatClientResponse> adviseStream(ChatClientRequest request, StreamAdvisorChain chain) {
-        // 流式响应是一个个 chunk 推下来的，若沿用默认实现，after 会被调用 N 次、回复被打印 N 遍。
-        // 交给 ChatClientMessageAggregator 聚合成一条完整回复后再打印。
+        // 流式响应是一个个 chunk 推下来的，若沿用默认实现，after 会被调用 N 次、日志被打印 N 遍。
+        // 交给 ChatClientMessageAggregator 聚合成一条完整回复后再打印（仍然只打长度）。
         return Mono.just(request)
                 .publishOn(this.getScheduler())
                 .map(req -> this.before(req, chain))
@@ -63,22 +63,25 @@ public class MyLoggerAdvisor implements BaseAdvisor {
                         .aggregateChatClientResponse(responses, this::logResponse));
     }
 
-    private void logResponse(ChatClientResponse response) {
-        log.info("AI Response: {}", outputText(response.chatResponse()));
-    }
-
-    /** 取最后一条用户消息，即本轮用户输入；没有用户消息时不抛异常 */
-    private static String lastUserText(Prompt prompt) {
+    /** 只记录最后一条用户消息的字符数（没有用户消息时明确标注） */
+    private void logRequest(Prompt prompt) {
         List<UserMessage> userMessages = prompt.getUserMessages();
-        return userMessages.isEmpty() ? "<无用户消息>"
-                : userMessages.get(userMessages.size() - 1).getText();
+        if (userMessages.isEmpty()) {
+            log.info("AI Request: <无用户消息>");
+            return;
+        }
+        String text = userMessages.get(userMessages.size() - 1).getText();
+        log.info("AI Request: userChars={}", text == null ? 0 : text.length());
     }
 
-    /** 异常或空响应时 getResult() 可能为 null，日志不该把主流程带崩 */
-    private static String outputText(ChatResponse chatResponse) {
+    private void logResponse(ChatClientResponse response) {
+        ChatResponse chatResponse = response == null ? null : response.chatResponse();
+        // 异常或空响应时 getResult() 可能为 null，日志不该把主流程带崩
         if (chatResponse == null || chatResponse.getResult() == null) {
-            return "<空响应>";
+            log.info("AI Response: <空响应>");
+            return;
         }
-        return chatResponse.getResult().getOutput().getText();
+        String text = chatResponse.getResult().getOutput().getText();
+        log.info("AI Response: answerChars={}", text == null ? 0 : text.length());
     }
 }

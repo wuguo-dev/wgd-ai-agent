@@ -28,6 +28,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.SynchronousSink;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -131,7 +132,8 @@ public class LoveAgent {
         log.info("agent 就绪：本地工具={}，MCP 工具={}", localToolCount, mcpTools.size());
         log.info("agent 工具清单（{} 个）: {}", toolNames.size(), toolNames);
         if (!mcpToolset.available()) {
-            log.warn("MCP 工具不可用（{}），仅本地工具可用", mcpToolset.status());
+            // 降级 WARN 由 AmapMcpToolProvider 打一条（AC5 要求恰好 1 条），这里只留调试信息
+            log.debug("MCP 工具不可用（{}），仅本地工具可用", mcpToolset.status());
         }
     }
 
@@ -180,6 +182,10 @@ public class LoveAgent {
      * {@link LoveAgentException} 终止（{@code TransientAiException} 原样穿透）。若模型一个
      * token 都没流出来，用最终消息全文兜底补发一次（最多一次）。</p>
      *
+     * <p>与 {@link #chat} 一致，流式也要防「框架把异常伪装成答复」：开头只缓冲到
+     * {@code "Exception: "} 的长度，命中就以错误终止且一个 delta 都不下发
+     * （否则 SSE 会变成「200 + 英文异常逐字下发 + done」，违反 §7.3）。</p>
+     *
      * @param chatId  会话 ID，规则同 {@link #chat(String, String)}
      * @param message 本轮用户消息
      */
@@ -195,7 +201,9 @@ public class LoveAgent {
             return Flux.error(translate(e, threadId));
         }
         return Flux.defer(() -> {
+            chatModelFailureRecorder.clear();
             AtomicBoolean chunkEmitted = new AtomicBoolean(false);
+            StreamSentinelGuard sentinelGuard = new StreamSentinelGuard(threadId);
             long startedAt = System.nanoTime();
             return outputs
                     .<String>handle((output, sink) -> AgentOutputMapper.toDelta(output, chunkEmitted.get())
@@ -203,9 +211,15 @@ public class LoveAgent {
                                 chunkEmitted.set(true);
                                 sink.next(delta);
                             }))
+                    .transform(sentinelGuard::apply)
                     .doOnComplete(() -> log.info("[chatId={}] stream 完成 elapsedMs={} chunkEmitted={}",
                             threadId, (System.nanoTime() - startedAt) / 1_000_000L, chunkEmitted.get()))
-                    .onErrorMap(error -> translate(error, threadId));
+                    .onErrorResume(error -> {
+                        // 优先用记录器里的原始异常：框架会把模型异常包成图异常/文本
+                        RuntimeException original = chatModelFailureRecorder.getAndClear();
+                        return Flux.error(translate(original != null ? original : error, threadId));
+                    })
+                    .doFinally(signal -> chatModelFailureRecorder.clear());
         });
     }
 
@@ -373,12 +387,24 @@ public class LoveAgent {
 
         @Override
         public Flux<ChatResponse> stream(Prompt prompt) {
-            return delegate.stream(prompt);
+            try {
+                // 流式异常发生在订阅/推流期，用 doOnError 记录；同步抛出的在 catch 里记录
+                return delegate.stream(prompt).doOnError(this::record);
+            } catch (RuntimeException e) {
+                record(e);
+                throw e;
+            }
         }
 
         @Override
         public ChatOptions getDefaultOptions() {
             return delegate.getDefaultOptions();
+        }
+
+        private void record(Throwable error) {
+            if (error instanceof RuntimeException runtimeException) {
+                lastFailure.set(runtimeException);
+            }
         }
 
         RuntimeException getAndClear() {
@@ -391,6 +417,110 @@ public class LoveAgent {
 
         void clear() {
             lastFailure.remove();
+        }
+    }
+
+    /**
+     * 流式哨兵：把「框架把异常伪装成答复文本」这种情况挡在 SSE 之外（规格 §7.3）。
+     *
+     * <p>只缓冲到 {@link #FRAMEWORK_ERROR_PREFIX} 的长度（11 字符），不会把整段答复攒起来：</p>
+     * <ul>
+     *   <li>缓冲内容一旦和前缀不匹配 → 立即 flush 并进入直通模式（后续 delta 原样下发）；</li>
+     *   <li>缓冲内容完整命中前缀 → 转入「只收集不下发」模式，流结束时以
+     *       {@link LoveAgentException} 终止，<b>一个 delta 都不许发出</b>；</li>
+     *   <li>流结束时仍在探测（例如答复只有「收到」两个字）→ 把缓冲内容作为最后一段发出。</li>
+     * </ul>
+     */
+    private static final class StreamSentinelGuard {
+
+        private static final int PROBING = 0;
+
+        private static final int PASS_THROUGH = 1;
+
+        private static final int SENTINEL = 2;
+
+        private final String threadId;
+
+        private final StringBuilder head = new StringBuilder(FRAMEWORK_ERROR_PREFIX.length());
+
+        /** 只用于命中后的分类与脱敏日志，上限 {@link #MAX_LOG_TEXT_LENGTH} 字符。 */
+        private final StringBuilder evidence = new StringBuilder();
+
+        private int state = PROBING;
+
+        private StreamSentinelGuard(String threadId) {
+            this.threadId = threadId;
+        }
+
+        Flux<String> apply(Flux<String> source) {
+            return source.<String>handle(this::onDelta)
+                    .concatWith(Flux.defer(this::completionSignal));
+        }
+
+        private void onDelta(String delta, SynchronousSink<String> sink) {
+            if (delta == null || delta.isEmpty()) {
+                return;
+            }
+            switch (state) {
+                case PASS_THROUGH -> sink.next(delta);
+                case SENTINEL -> appendEvidence(delta);
+                default -> probe(delta, sink);
+            }
+        }
+
+        private void probe(String delta, SynchronousSink<String> sink) {
+            int take = Math.min(delta.length(), FRAMEWORK_ERROR_PREFIX.length() - head.length());
+            head.append(delta, 0, take);
+            if (matchedPrefixLength(head) < head.length()) {
+                // 与哨兵前缀不匹配：立刻 flush 并恢复直通，绝不攒整段答复
+                state = PASS_THROUGH;
+                String flush = head + delta.substring(take);
+                head.setLength(0);
+                if (!flush.isEmpty()) {
+                    sink.next(flush);
+                }
+                return;
+            }
+            if (head.length() >= FRAMEWORK_ERROR_PREFIX.length()) {
+                // 完整命中："Exception: " → 不再下发任何文本，只留分类依据
+                state = SENTINEL;
+                appendEvidence(head.toString());
+                appendEvidence(delta.substring(take));
+            }
+        }
+
+        /** 流自然结束时：要么补发仍在缓冲的尾巴，要么把哨兵变成错误信号。 */
+        private Flux<String> completionSignal() {
+            if (state == SENTINEL) {
+                String text = evidence.toString();
+                log.warn("[chatId={}] 拦截流式异常文本（{}）", threadId, sanitize(text));
+                return Flux.error(new LoveAgentException(classifyFrameworkError(text), "模型调用失败，请稍后重试"));
+            }
+            if (head.length() > 0) {
+                String tail = head.toString();
+                head.setLength(0);
+                return Flux.just(tail);
+            }
+            return Flux.empty();
+        }
+
+        private void appendEvidence(String text) {
+            if (text == null || text.isEmpty() || evidence.length() >= MAX_LOG_TEXT_LENGTH) {
+                return;
+            }
+            int room = MAX_LOG_TEXT_LENGTH - evidence.length();
+            evidence.append(text, 0, Math.min(text.length(), room));
+        }
+
+        /** 返回 {@code text} 与哨兵前缀逐字符匹配（忽略大小写）的长度。 */
+        private static int matchedPrefixLength(CharSequence text) {
+            int max = Math.min(text.length(), FRAMEWORK_ERROR_PREFIX.length());
+            for (int i = 0; i < max; i++) {
+                if (Character.toLowerCase(text.charAt(i)) != Character.toLowerCase(FRAMEWORK_ERROR_PREFIX.charAt(i))) {
+                    return i;
+                }
+            }
+            return max;
         }
     }
 }
