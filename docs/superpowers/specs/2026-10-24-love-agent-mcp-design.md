@@ -68,7 +68,7 @@
 | D12 | 工具执行**串行**（不显式开启 `parallelToolExecution`），图递归上限 8 | 日志可读、结果确定、防模型死循环 |
 | D13 | `document/**` 本轮**不改内容**（仅允许修错别字），避免为一句话重算 Embedding；检索质量靠 prompt 策略兜住 | YAGNI；ETL 重跑成本与云端写入风险大于收益（§12 R8） |
 | D14 | 系统提示词用 **`Builder.systemPrompt(...)`**，不用 `instruction(...)` | `instruction` 会成为首条 `UserMessage` 并被当 `PromptTemplate` 渲染，正文里的 `{` `}` 会被当占位符报错 |
-| D15 | SSE 用**真流式**：`agent.stream(...)` 的 `StreamingOutput.chunk()`，只取 `OutputType.AGENT_MODEL_STREAMING` | 不做伪流式；`AgentLlmNode` 读 metadata `_stream_` 默认 true，`call()` 内部也走流式，行为一致 |
+| D15 | SSE 用**真流式**：`agent.stream(...)` 的 `StreamingOutput.chunk()`，只取 `OutputType.AGENT_MODEL_STREAMING` | 不做伪流式。**修正（源码核实）**：`Agent.doInvoke` 无条件用 `buildNonStreamConfig(config)`，其中硬写 `addMetadata("_stream_", false)` → **`agent.call()` 永远非流式**，调用方传 `_stream_` 也无效；只有 `agent.stream(...)` 走 `buildStreamConfig(...)` 才是真流。因此同步与流式是两条物理路径，异常行为也不同（见 §3.4 的 `AgentLlmNode` 吞异常事实与 R17） |
 | D16 | **工具名以运行时 `listTools()` 为准**，不写进配置或提示词 | 默认前缀生成器会把非字母数字换成 `_`、重名追加序号、超 64 字符截断；工具集在 `build()` 时固化，增减需重建 agent |
 | D17 | 上下文窗口由 `HistoryWindowHook`（`MessagesModelHook`）在**每次模型调用前**裁剪到最近 20 条，且不切断 `Assistant(toolCalls)`/`ToolResponse` 配对 | saver 会持久化整段会话，不裁剪会无限膨胀 |
 
@@ -728,7 +728,7 @@ mvn -o test -Dtest='LoveAgent*Test'
 
 ### 9.5 测试替身约定
 
-- **假 `ChatModel`**：实现 `ChatModel`，按「消息中是否已有 `ToolResponseMessage`」决定返回 `toolCall` 还是最终文本；记录每次收到的 `Prompt` 供断言；不联网。**注意（审查补充）**：`AgentLlmNode` 读 metadata `_stream_` 默认 `true`，即 `ReactAgent.call()` 内部也可能走 `ChatClient.stream()`，所以假 `ChatModel` 必须同时实现 `stream(...)`（至少 `return Flux.just(new ChatResponse(...))` 或把 `call()` 结果包成 Flux），否则 T12–T15 会在运行期抛 `UnsupportedOperationException`。若流式路径无法稳定模拟，退路是在测试的 `CompileConfig`/metadata 里显式设 `_stream_=false`（仅测试用，不改生产路径）。
+- **假 `ChatModel`**：实现 `ChatModel`，按「消息中是否已有 `ToolResponseMessage`」决定返回 `toolCall` 还是最终文本；记录每次收到的 `Prompt` 供断言；不联网。**注意（源码核实后的修正）**：`agent.call()` 固定走非流式分支（`buildNonStreamConfig` 硬写 `_stream_=false`），所以 T12–T18 的假模型**只需 `call()` 可用即可**；但**假模型同时实现 `stream(...)` 更稳**，因为流式用例与「零 chunk 兜底」路径会走 `ChatClient.stream()`。另：若假模型在 `call()` 里抛异常，异常会被框架吞成 `Exception: ...` 文本，需要 `LoveAgent` 的记录器/哨兵还原（见 R17），测试要按这个机制写断言。
 - **假 `VectorStore`**：实现 `VectorStore`，`similaritySearch(SearchRequest)` 记录请求并返回固定 `Document`。
 - **假 MCP**：`AmapMcpToolProvider` 把「创建客户端」抽成包可见方法 `McpSyncClient createClient(McpClientTransport)`，测试覆写返回 stub；`initialize()`/`listTools()` 抛异常即可模拟失败。
 - **假 `NodeOutput`**：`StreamingOutput` 非 final，Mockito 可 mock；`getOutputType()`/`chunk()`/`message()` 打桩。
