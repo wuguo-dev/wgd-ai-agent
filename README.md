@@ -110,9 +110,20 @@ mvn -Plive test
 
 ## 密钥规则（硬性要求）
 
-- **密钥绝不可入库**。`AMAP_MCP_KEY`、DashScope key、数据库口令一律只从进程环境读取。
+- **密钥绝不可入库**。`AMAP_MCP_KEY`、DashScope key、数据库口令一律只从进程环境或**被 gitignore 的本地配置**读取。
 - `src/main/resources/application-local.yml` 已被 `.gitignore` 排除，用于放本地凭据；**不要 `git add -f`**，
   也不要把其中的值复制到任何被跟踪的文件（含 `application.yml`、测试、README、脚本）。
+- 高德 Key 两种放法，任选其一（**环境变量优先**）：
+  1. 环境变量：`$env:AMAP_MCP_KEY = '<your-key>'`
+  2. 本地配置（推荐，IDE 启动不用再配环境变量）：在 `application-local.yml` 里写
+     ```yaml
+     love-app:
+       agent:
+         mcp:
+           key: ${AMAP_MCP_KEY:你的key}
+     ```
+     这种写法让环境变量仍可覆盖，没设环境变量时用文件里的值。**验证方式**：不设环境变量启动，
+     日志应出现 `高德 MCP 工具：原始 15 个，暴露 12 个` 而不是 `高德 MCP 未启用`。
 - 日志、异常 message、HTTP 响应体都不得出现 key 或其片段，包括 URL query 里的 key。
 - 交付前自检：
 
