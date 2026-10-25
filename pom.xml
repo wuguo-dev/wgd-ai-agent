@@ -1,0 +1,289 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.4</version>
+        <relativePath/>
+        <!--  lookup parent from repository  -->
+    </parent>
+    <groupId>com.wjy</groupId>
+    <artifactId>wjy-ai-agent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>wjy-ai-agent</name>
+    <description>wjy-ai-agent</description>
+    <properties>
+        <java.version>21</java.version>
+        <!--
+                  surefire 默认排除的 JUnit tag。默认值 live 表示「离线门槛只跑 offline」，
+                  profile live 会把它置为 none 并只跑 live（见文件末尾的 <profiles>）。
+                 -->
+        <surefire.excluded.groups>live</surefire.excluded.groups>
+    </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.alibaba.cloud.ai</groupId>
+                <artifactId>spring-ai-alibaba-bom</artifactId>
+                <version>1.1.2.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>1.1.2</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.alibaba.cloud.ai</groupId>
+                <artifactId>spring-ai-alibaba-extensions-bom</artifactId>
+                <version>1.1.2.1</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!--
+                      统一 springdoc 版本（v3 接口文档 / Swagger UI 实现）。
+                      历史原因：knife4j 4.5.0 曾把 springdoc 钉在 2.3.0，与 Boot 3.4.4 的 Spring Framework
+                      6.2.x 不兼容（ControllerAdviceBean(Object) 已删除 → /v3/api-docs 500）。
+                      knife4j 已在本轮移除（理由见 <dependencies> 里的注释），保留 BOM 是为了让
+                      webmvc-ui / webmvc-api / common 等模块版本始终一致，并防止将来某个传递依赖把
+                      它们拉回 2.3.x 造成同类 NoSuchMethodError。
+                     -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-bom</artifactId>
+                <version>2.8.9</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!--
+                      必须钉住 MCP SDK 版本：spring-ai-mcp:1.1.2 需要 0.17.0，而
+                      spring-ai-alibaba-agent-framework 在 depth 2 声明 0.14.0，
+                      nearest-wins 会选中 0.14.0，导致 SyncMcpToolCallback 运行期 NoSuchMethodError。
+                      spring-ai-bom 不管理该 SDK，所以只能在这里钉死。
+                     -->
+            <dependency>
+                <groupId>io.modelcontextprotocol.sdk</groupId>
+                <artifactId>mcp</artifactId>
+                <version>0.17.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>1.18.36</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+            <version>5.8.47</version>
+        </dependency>
+        <!--
+                  文档依赖：springdoc-openapi-starter-webmvc-ui（自带 Swagger UI）。
+
+                  原先用 knife4j-openapi3-jakarta-spring-boot-starter:4.5.0，但它与 Boot 3.4.4 / Spring
+                  Framework 6.2.x 无法共存，两条路都实测过（字节码核对 + 真机启动）：
+                    · springdoc 2.3.0（knife4j 4.5.0 的编译目标，getGroupConfigs() 返回 List）
+                      → GenericResponseService 调已被删除的 ControllerAdviceBean(Object)
+                        → /api/v3/api-docs 与 /api/doc.html 必然 500；
+                    · springdoc 2.5.0/2.6.0（已改成 Set，但旧构造器调用还在）→ 同样 500；
+                    · springdoc 2.8.x（旧构造器已消除）→ knife4j 自己的 Knife4jOpenApiCustomizer
+                      调 getGroupConfigs() 抛 NoSuchMethodError。
+                  结论：没有任何 springdoc 版本能同时满足 knife4j 4.5.0 与 Spring Framework 6.2，
+                  且 knife4j 4.6.0 在仓库中不存在（404）。因此移除 knife4j，改用官方 Swagger UI。
+                 -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>dashscope-sdk-java</artifactId>
+            <version>2.21.16</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-simple</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-agent-framework</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.victools</groupId>
+            <artifactId>jsonschema-generator</artifactId>
+            <version>4.38.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.esotericsoftware</groupId>
+            <artifactId>kryo</artifactId>
+            <version>5.6.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-markdown-document-reader</artifactId>
+        </dependency>
+        <!--  手动创建 PgVectorStore；版本由 Spring Boot / Spring AI BOM 管理  -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-pgvector-store</artifactId>
+        </dependency>
+        <!--  QuestionAnswerAdvisor 所在的模块，版本由 spring-ai-bom 管理  -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-advisors-vector-store</artifactId>
+        </dependency>
+        <!--
+                  MCP 客户端核心（不引入 spring-ai-starter-mcp-client：它声明 Spring Boot 3.5.8，
+                  与本项目 3.4.4 父 POM 冲突；本项目手工装配 MCP 客户端）。版本由 spring-ai-bom 管理，
+                  底层 mcp SDK 版本由上面的 dependencyManagement 钉为 0.17.0。
+                 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-mcp</artifactId>
+        </dependency>
+        <!--  请求参数校验：@Valid / @NotBlank / MethodArgumentNotValidException  -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+    </dependencies>
+    <!--
+          IDE 兜底：IntelliJ 等工具默认不读 .mvn/maven.config，也就不会加载 .mvn/settings.xml 里的
+          aliyun-public mirror；这里把同一镜像登记为项目级仓库，保证 IDE 解析依赖时同样走阿里云。
+          命令行场景仍以 .mvn/settings.xml 的 <mirrorOf>*</mirrorOf> 为准。
+         -->
+    <repositories>
+        <repository>
+            <id>aliyun-public</id>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+    <pluginRepositories>
+        <pluginRepository>
+            <id>aliyun-public</id>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!--
+                          测试分层：默认排除 live tag（真 LLM / 真 RDS / 真高德，会花钱且依赖外网），
+                          所以 `mvn -o test` 只跑 offline。要跑真环境用 `mvn -Plive test`。
+                         -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${surefire.excluded.groups}</excludedGroups>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>org.projectlombok</groupId>
+                                    <artifactId>lombok</artifactId>
+                                    <version>1.18.36</version>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>default-testCompile</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>testCompile</goal>
+                        </goals>
+                        <configuration>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>org.projectlombok</groupId>
+                                    <artifactId>lombok</artifactId>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+    <profiles>
+        <!--
+                  mvn -Plive test：只跑打了 @Tag("live") 的用例（真模型、真 pgvector、真高德）。
+                  需要 AMAP_MCP_KEY、DashScope key、PGVECTOR_* 等真实环境变量，会花钱。
+                 -->
+        <profile>
+            <id>live</id>
+            <properties>
+                <surefire.excluded.groups>none</surefire.excluded.groups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>live</groups>
+                            <excludedGroups>${surefire.excluded.groups}</excludedGroups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

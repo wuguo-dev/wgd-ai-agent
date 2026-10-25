@@ -1,0 +1,85 @@
+spring:
+  application:
+    name: wjy-ai-agent
+  profiles:
+    active: local,pgvector
+  ai:
+    retry:
+      # 总尝试次数包含首次调用；429 限流时等待后重试。
+      max-attempts: 4
+      on-client-errors: false
+      on-http-codes: [429]
+      backoff:
+        initial-interval: 10s
+        multiplier: 2
+        max-interval: 40s
+
+server:
+  port: 8123
+  servlet:
+    context-path: /api
+# springdoc-openapi 接口文档配置
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+  group-configs:
+    - group: 'default'
+      paths-to-match:
+        - '/**'
+      packages-to-scan:
+        - com.wjy.wjyaiagent.controller
+# knife4j 已移除：4.5.0 与 Boot 3.4.4 的 Spring Framework 6.2 不兼容（/v3/api-docs 500），
+# 4.6.0 在仓库中不存在；接口文档改用 springdoc 自带 Swagger UI（地址见 README）。
+#springAI advisor日志
+logging:
+  level:
+    org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor: debug
+    # 高德 /mcp 端点不支持客户端再开一条 GET SSE 长连接，SDK 会在初始化时打一条
+    # 「Invalid SSE response. Status code: 405」WARN 并附长堆栈（规格 R22）。
+    # 实测不影响 initialize / tools-list / tools-call（地图工具调用正常），
+    # 这里只压掉这一个 logger 的噪音；真正的传输失败仍由 AmapMcpToolProvider 的 WARN 报告。
+    io.modelcontextprotocol.client.LifecycleInitializer: error
+
+# 恋爱大师 Agent（工具层 + ReAct 内核）配置，规格 §8.1/§8.2。
+# 只有环境变量名，没有 key 值：key 的唯一来源是进程环境变量 AMAP_MCP_KEY，
+# 未设置时默认空串 → 启动期降级为「仅本地工具」，不报错（AC5/§8.4）。
+love-app:
+  agent:
+    history-window: 20
+    max-message-length: 2000
+    sse-timeout: 60s
+    # 框架推理日志（system prompt / 工具入参 / 答复全文）默认关闭，仅本地排障时置 true（§7.4）
+    log-reasoning: ${LOVE_AGENT_LOG_REASONING:false}
+    memory:
+      type: ${LOVE_AGENT_MEMORY_TYPE:file}
+      dir: ${LOVE_AGENT_MEMORY_DIR:chat-memory/agent}
+    mcp:
+      enabled: ${AMAP_MCP_ENABLED:true}
+      # 默认 Streamable HTTP；回退可用 sse / stdio（AMAP_MCP_PROTOCOL=sse|stdio）
+      protocol: ${AMAP_MCP_PROTOCOL:streamable-http}
+      key: ${AMAP_MCP_KEY:}
+      # 只到 host：query 由代码拼到端点里（URI.resolve 会丢弃 base 上的 query）
+      base-url: ${AMAP_MCP_BASE_URL:https://mcp.amap.com}
+      sse-path: ${AMAP_MCP_SSE_PATH:/sse}
+      streamable-path: ${AMAP_MCP_STREAMABLE_PATH:/mcp}
+      connect-timeout: 3s
+      request-timeout: 20s
+      stdio:
+        # Windows 下直接执行 npx(.cmd) 会失败，故经 cmd /c 启动
+        command: cmd
+        args: ["/c", "npx", "-y", "@amap/amap-maps-mcp-server"]
+        env-key-name: AMAP_MAPS_API_KEY
+      # 工具白名单（D18）：实测托管端点暴露 15 个，默认屏蔽 3 个 schema 元工具 → 暴露 12 个。
+      # 规则：`*` 结尾做前缀匹配，否则全名精确匹配；配置是整体覆盖，自定义时记得带上 maps_schema_*。
+      exclude-tools: ["maps_schema_*"]
+  # 可选 API Key 鉴权 + 令牌桶限流（只保护 /ai/**）。
+  # api-key 为空 = 关闭鉴权、限流改按客户端 IP 计数，本地开发无需任何凭据。
+  security:
+    api-key: ${LOVE_APP_API_KEY:}
+    rate-limit-per-minute: ${LOVE_APP_RATE_LIMIT_PER_MINUTE:30}
+    rate-limit-burst: ${LOVE_APP_RATE_LIMIT_BURST:30}
+
