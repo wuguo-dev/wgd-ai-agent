@@ -18,7 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 /**
- * 可选 API Key 鉴权：只在 {@code love-app.security.api-key} 非空时生效。
+ * 可选 API Key 鉴权：只在 {@code knowledge-base.security.api-key} 非空时生效。
  *
  * <p>作用域只到 {@code /ai/**}（{@code server.servlet.context-path=/api} 已被容器剥离，
  * 这里看到的 servletPath 是 {@code /ai/...}）；{@code /hello}、{@code /v3/api-docs}、

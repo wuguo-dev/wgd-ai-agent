@@ -58,17 +58,6 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            <!--
-                      必须钉住 MCP SDK 版本：spring-ai-mcp:1.1.2 需要 0.17.0，而
-                      spring-ai-alibaba-agent-framework 在 depth 2 声明 0.14.0，
-                      nearest-wins 会选中 0.14.0，导致 SyncMcpToolCallback 运行期 NoSuchMethodError。
-                      spring-ai-bom 不管理该 SDK，所以只能在这里钉死。
-                     -->
-            <dependency>
-                <groupId>io.modelcontextprotocol.sdk</groupId>
-                <artifactId>mcp</artifactId>
-                <version>0.17.0</version>
-            </dependency>
         </dependencies>
     </dependencyManagement>
     <dependencies>
@@ -86,11 +75,6 @@
             <artifactId>lombok</artifactId>
             <version>1.18.36</version>
             <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>cn.hutool</groupId>
-            <artifactId>hutool-all</artifactId>
-            <version>5.8.47</version>
         </dependency>
         <!--
                   文档依赖：springdoc-openapi-starter-webmvc-ui（自带 Swagger UI）。
@@ -120,10 +104,6 @@
                     <artifactId>slf4j-simple</artifactId>
                 </exclusion>
             </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>com.alibaba.cloud.ai</groupId>
-            <artifactId>spring-ai-alibaba-agent-framework</artifactId>
         </dependency>
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
@@ -161,15 +141,6 @@
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-advisors-vector-store</artifactId>
-        </dependency>
-        <!--
-                  MCP 客户端核心（不引入 spring-ai-starter-mcp-client：它声明 Spring Boot 3.5.8，
-                  与本项目 3.4.4 父 POM 冲突；本项目手工装配 MCP 客户端）。版本由 spring-ai-bom 管理，
-                  底层 mcp SDK 版本由上面的 dependencyManagement 钉为 0.17.0。
-                 -->
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-mcp</artifactId>
         </dependency>
         <!--  请求参数校验：@Valid / @NotBlank / MethodArgumentNotValidException  -->
         <dependency>
@@ -213,7 +184,7 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
             <!--
-                          测试分层：默认排除 live tag（真 LLM / 真 RDS / 真高德，会花钱且依赖外网），
+                          测试分层：默认排除 live tag（真 LLM / 真 RDS，会花钱且依赖外网），
                           所以 `mvn -o test` 只跑 offline。要跑真环境用 `mvn -Plive test`。
                          -->
             <plugin>
@@ -264,8 +235,8 @@
     </build>
     <profiles>
         <!--
-                  mvn -Plive test：只跑打了 @Tag("live") 的用例（真模型、真 pgvector、真高德）。
-                  需要 AMAP_MCP_KEY、DashScope key、PGVECTOR_* 等真实环境变量，会花钱。
+                  mvn -Plive test：只跑打了 @Tag("live") 的用例（真模型、真 pgvector）。
+                  需要 DashScope key、PGVECTOR_* 等真实环境变量，会花钱。
                  -->
         <profile>
             <id>live</id>

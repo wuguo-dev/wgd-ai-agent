@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="light dark" />
-<title>恋爱助手 · AI 对话</title>
+<title>知识库问答 · AI 对话</title>
 <style>
   :root {
     --bg: #f4f5f8;
@@ -360,7 +360,7 @@
     <div class="brand">
       <div class="logo">AI</div>
       <div>
-        <h1>恋爱助手</h1>
+        <h1>知识库问答</h1>
         <p class="sub" id="statusText">准备就绪</p>
       </div>
     </div>
@@ -389,7 +389,7 @@
 (function () {
   'use strict';
 
-  var ENDPOINT = '/api/ai/love/agent/chat/stream';
+  var ENDPOINT = '/api/ai/knowledge/chat/stream';
   var K_CHAT = 'wjy.ai.chatId';
   var K_KEY = 'wjy.ai.apiKey';
 
@@ -425,7 +425,7 @@
     box.className = 'empty';
     box.innerHTML =
       '<div class="empty-icon">💬</div>' +
-      '<div class="empty-title">和 AI 恋爱助手聊聊吧</div>' +
+      '<div class="empty-title">和 AI 知识库助手聊聊吧</div>' +
       '<div class="empty-tip">Enter 发送 · Shift+Enter 换行</div>';
     chatEl.appendChild(box);
   }
@@ -471,8 +471,15 @@
   function appendDelta(ctx, delta) {
     if (!ctx || ctx.failed || !delta) return;
     if (ctx.bubble.classList.contains('pending')) ctx.bubble.classList.remove('pending');
-    ctx.bubble.appendChild(document.createTextNode(delta));
+    ctx.answerText = (ctx.answerText || '') + delta;
+    ctx.bubble.textContent = stripAnswerSources(ctx.answerText);
     scrollToBottom();
+  }
+
+  function stripAnswerSources(text) {
+    if (!text) return '';
+    var match = text.search(/\n(?:\*\*)?(?:来源|引用|参考来源)(?:\*\*)?\s*[:：]?/i);
+    return match < 0 ? text : text.substring(0, match).trim();
   }
 
   function showErrorIn(ctx, code, message) {
