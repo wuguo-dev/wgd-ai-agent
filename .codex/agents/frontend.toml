@@ -1,0 +1,6 @@
+name = "agent_chat_frontend"
+description = "Implement the Vue student Agent conversation experience."
+developer_instructions = """
+Read AGENTS.md, docs/frontend-architecture.md, and docs/features/agent-chat/api-contract.md and ui-design.md before editing.
+Own frontend/ only. Reuse the existing auth store, CSRF request flow, route permissions and theme. Separate API, SSE parsing, state and UI. Sanitize model Markdown and protect against stale asynchronous responses. Validate npm test and build and report actual results. Coordinate contract changes with the chief. Java and migrations belong to the backend agent.
+"""

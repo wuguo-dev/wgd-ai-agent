@@ -45,6 +45,7 @@ public class KnowledgeChatService {
     }
 
     public KnowledgeChatResponse chat(KnowledgeChatRequest request) {
+        rejectStudentNamespace(request.chatId());
         String chatId = normalizeChatId(request.chatId());
         long startedAt = System.nanoTime();
         try {
@@ -66,6 +67,25 @@ public class KnowledgeChatService {
     }
 
     public Flux<KnowledgeStreamEvent> stream(KnowledgeChatRequest request) {
+        rejectStudentNamespace(request.chatId());
+        return streamInternal(request);
+    }
+
+    /** Called only after the student conversation service verifies ownership. */
+    public Flux<KnowledgeStreamEvent> streamForStudent(KnowledgeChatRequest request) {
+        if (request.chatId() == null || !request.chatId().startsWith("student-")) {
+            throw new IllegalArgumentException("Student memory namespace required");
+        }
+        return streamInternal(request);
+    }
+
+    private static void rejectStudentNamespace(String chatId) {
+        if (chatId != null && chatId.trim().regionMatches(true, 0, "student-", 0, 8)) {
+            throw new KnowledgeBaseException(KnowledgeBaseErrorCode.INVALID_REQUEST,"该会话标识不可用于此入口");
+        }
+    }
+
+    private Flux<KnowledgeStreamEvent> streamInternal(KnowledgeChatRequest request) {
         String chatId = normalizeChatId(request.chatId());
         long startedAt = System.nanoTime();
         try {

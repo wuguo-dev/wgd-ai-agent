@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>学生登录 · 学生社区</title><link rel="stylesheet" href="css/login.css"><script type="module" src="js/login.js"></script></head>
+<body><main class="card"><a class="brand" href="index.html">知识库问答</a><h1>登录学生社区</h1><p class="muted">使用你的学生账号继续</p>
+<form id="login-form">
+<label for="username">用户名</label><input id="username" name="username" autocomplete="username" maxlength="64" required>
+<label for="password">密码</label><div class="password-field"><input id="password" name="password" type="password" autocomplete="current-password" maxlength="72" required><button id="toggle-password" type="button" aria-controls="password" aria-label="显示密码" aria-pressed="false">显示</button></div>
+<p id="status" role="status" aria-live="polite"></p><button class="primary" id="submit" type="submit">登录</button>
+</form></main></body></html>

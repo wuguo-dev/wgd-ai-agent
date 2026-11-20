@@ -1,6 +1,10 @@
 ### Custom ###
 application-local.yml
 chat-memory/
+.playwright-mcp/
+__pycache__/
+*.py[cod]
+docs/graduation-design/.diagram-check/
 
 HELP.md
 target/

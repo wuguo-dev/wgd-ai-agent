@@ -1,0 +1,18 @@
+* { box-sizing: border-box; }
+:root { color-scheme: light dark; --bg: #f4f5f8; --card: #fff; --text: #181b21; --muted: #687080; --line: #d9deea; --brand: #5b6cff; }
+body { margin: 0; min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
+.card { width: 100%; max-width: 430px; padding: 36px; background: var(--card); border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 12px 40px -30px #202840; }
+.brand { color: var(--brand); text-decoration: none; font-weight: 650; }
+h1 { margin: 24px 0 4px; font-size: 27px; }
+.muted { color: var(--muted); margin: 0 0 28px; }
+label { display: block; margin: 18px 0 7px; font-weight: 600; }
+input { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; font: inherit; background: var(--card); color: var(--text); }
+button { font: inherit; cursor: pointer; border-radius: 9px; }
+input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; }
+.password-field { display: flex; gap: 8px; }
+.password-field button { flex: 0 0 64px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+.primary { padding: 12px; width: 100%; background: var(--brand); color: white; border: 0; font-weight: 600; }
+button:disabled { opacity: .6; cursor: wait; }
+#status { min-height: 26px; color: #b42c39; overflow-wrap: anywhere; }
+@media (max-width: 480px) { body { padding: 16px; } .card { padding: 26px 22px; } }
+@media (prefers-color-scheme: dark) { :root { --bg: #0e1014; --card: #171a21; --text: #e9ebf2; --muted: #a3abba; --line: #353c4c; --brand: #8793ff; } #status { color: #ff929e; } }

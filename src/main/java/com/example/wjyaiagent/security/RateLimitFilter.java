@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
 /**
- * 令牌桶限流：作用域同 {@link ApiKeyFilter}，只保护 {@code /ai/**}。
+ * 令牌桶限流：保护旧 {@code /ai/**} 和学生会话的生成请求。
  *
  * <p>桶按「凭据」隔离：配置了 API Key 时用请求头 {@code X-API-Key} 作为键，
  * 未配置时（本地开发）退化为按 {@code getRemoteAddr()} 计数。令牌桶容量取
@@ -105,6 +105,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
      * 既避免 {@link ConcurrentHashMap} 拒绝 null 键，也保证限流不会因此失效。</p>
      */
     private String bucketKey(HttpServletRequest request) {
+        if (request.getServletPath().startsWith("/agent/")) return "student-ip:" + request.getRemoteAddr();
         if (StringUtils.hasText(properties.getApiKey())) {
             String provided = request.getHeader(ApiKeyFilter.API_KEY_HEADER);
             if (StringUtils.hasText(provided)) {
@@ -136,6 +137,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
     /** 作用域判定与 {@link ApiKeyFilter} 保持一致：{@code /ai} 与 {@code /ai/...}。 */
     private static boolean requiresRateLimit(HttpServletRequest request) {
         String path = request.getServletPath();
-        return path != null && (path.equals(GUARDED_PREFIX) || path.startsWith(GUARDED_PREFIX + "/"));
+        return path != null && (path.equals(GUARDED_PREFIX) || path.startsWith(GUARDED_PREFIX + "/")
+                || path.matches("/agent/conversations/[^/]+/messages/stream"));
     }
 }

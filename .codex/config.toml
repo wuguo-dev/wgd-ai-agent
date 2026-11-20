@@ -1,0 +1,3 @@
+# Custom role files live in .codex/agents/. Model settings inherit the parent.
+[agents]
+enabled = true
